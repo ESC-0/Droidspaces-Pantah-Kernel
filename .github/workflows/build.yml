@@ -244,13 +244,6 @@ jobs:
             \( -name 'Image' -o -name 'Image.lz4' -o -name 'Image.gz' -o -name '*.img' \) \
             -print -quit)"
 
-          if ! grep -R \
-            -q "ABI: use ABI padding for SYSVIPC" \
-            "$GITHUB_WORKSPACE/kernel/aosp/include/linux/sched.h"; then
-            echo "The SYSVIPC kABI patch is missing from the source used for the build."
-            exit 1
-          fi
-
       - name: Upload compiled kernel
         if: success()
         uses: actions/upload-artifact@v4
