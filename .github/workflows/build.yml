@@ -206,37 +206,30 @@ jobs:
           set -euo pipefail
 
           rm -rf out/bazel
-
           mkdir -p out/bazel
 
-      - name: Verify Pixel 7 distribution target
+      - name: Verify kernel build package
         working-directory: kernel
         run: |
           set -euo pipefail
 
-          TARGET="//private/gs-google:gs101_dist"
+          if [ ! -f common/BUILD.bazel ] \
+            && [ ! -f common/BUILD ]; then
+            echo "The common kernel build package was not found."
 
-          if [ ! -f private/gs-google/BUILD.bazel ] \
-            && [ ! -f private/gs-google/BUILD ]; then
-            echo "Expected Pixel 7 build package was not found:"
-            echo "private/gs-google"
-            find private -maxdepth 3 \
+            find . \
+              -maxdepth 3 \
               \( -name BUILD -o -name BUILD.bazel \) \
               -print \
               | sort
+
             exit 1
           fi
 
-          if ! tools/bazel query "$TARGET" \
-            --output=label \
-            > /tmp/pixel7-target.txt; then
-            echo "The Pixel 7 distribution target could not be loaded:"
-            cat /tmp/pixel7-target.txt || true
-            exit 1
-          fi
+          TARGET="//common:kernel_aarch64_dist"
 
-          echo "Verified target:"
-          cat /tmp/pixel7-target.txt
+          echo "Using target:"
+          echo "$TARGET"
 
           echo "KERNEL_DIST_TARGET=$TARGET" >> "$GITHUB_ENV"
 
