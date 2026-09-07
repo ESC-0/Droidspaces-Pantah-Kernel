@@ -75,14 +75,18 @@ jobs:
           PATCH="$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch"
 
           if [ ! -f "$PATCH" ]; then
-            echo "Required patch was not found:"
-            echo "$PATCH"
-            echo
-            echo "Available GKI patches:"
+            PATCH="$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kABI_6_7_8.patch"
+          fi
+
+          if [ ! -f "$PATCH" ]; then
+            echo "Required SYSVIPC kABI patch was not found."
+
             find \
-              "$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI" \
+              "$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12" \
               -type f \
-              -print
+              -print \
+              | sort
+
             exit 1
           fi
 
@@ -208,7 +212,7 @@ jobs:
           rm -rf out/bazel
           mkdir -p out/bazel
 
-      - name: Verify kernel build package
+      - name: Locate Bazel kernel distribution target
         working-directory: kernel
         run: |
           set -euo pipefail
@@ -226,7 +230,29 @@ jobs:
             exit 1
           fi
 
-          TARGET="//common:kernel_aarch64_dist"
+          echo "Available targets in //common:"
+          tools/bazel query '//common:*' --output=label | sort
+
+          TARGET="$(
+            tools/bazel query '//common:*' --output=label \
+              | grep -E '^//common:.*(_aarch64)?_dist$' \
+              | head -n 1 || true
+          )"
+
+          if [ -z "$TARGET" ]; then
+            TARGET="$(
+              tools/bazel query '//common:*' --output=label \
+                | grep -E '^//common:(kernel_aarch64|kernel_dist|kernel)$' \
+                | head -n 1 || true
+            )
+          fi
+
+          if [ -z "$TARGET" ]; then
+            echo "No usable kernel build or distribution target was found in //common."
+            echo "Targets exposed by the kernel source:"
+            tools/bazel query '//common:*' --output=label | sort
+            exit 1
+          fi
 
           echo "Using target:"
           echo "$TARGET"
@@ -237,6 +263,9 @@ jobs:
         working-directory: kernel
         run: |
           set -euo pipefail
+
+          rm -rf "$GITHUB_WORKSPACE/kernel/dist"
+          mkdir -p "$GITHUB_WORKSPACE/kernel/dist"
 
           tools/bazel run "$KERNEL_DIST_TARGET" \
             -- \
