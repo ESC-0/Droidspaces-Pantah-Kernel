@@ -117,9 +117,11 @@ jobs:
 
           set_config CONFIG_SYSVIPC
           set_config CONFIG_POSIX_MQUEUE
+          set_config CONFIG_NAMESPACES
           set_config CONFIG_IPC_NS
           set_config CONFIG_PID_NS
           set_config CONFIG_DEVTMPFS
+          set_config CONFIG_DEVTMPFS_MOUNT
           set_config CONFIG_NETFILTER_XT_MATCH_ADDRTYPE
           set_config CONFIG_USER_NS
           set_config CONFIG_NETFILTER_XT_TARGET_REJECT
@@ -141,15 +143,35 @@ jobs:
         working-directory: kernel/aosp
         run: |
           set -euo pipefail
+          
+          for option in \
+            CONFIG_NAMESPACES \
+            CONFIG_PID_NS \
+            CONFIG_DEVTMPFS \
+            CONFIG_DEVTMPFS_MOUNT \
+            CONFIG_USER_NS; do
+            if ! grep -q "^${option}=y$" arch/arm64/configs/gki_defconfig; then
+              echo "ERROR: ${option} is missing or disabled"
+              grep -E "^#? ?${option}(=| is not set)" \
+                arch/arm64/configs/gki_defconfig || true
+              exit 1
+            fi
+          done
+          
+          echo "Verified Droidspaces kernel configuration:"
+          grep -E '^(CONFIG_NAMESPACES|CONFIG_PID_NS|CONFIG_DEVTMPFS|CONFIG_DEVTMPFS_MOUNT|CONFIG_USER_NS)=y$' \
+            arch/arm64/configs/gki_defconfig
 
           grep -q "ABI: use ABI padding for SYSVIPC" include/linux/sched.h || true
 
           REQUIRED_OPTIONS=(
+            CONFIG_NAMESPACES
             CONFIG_SYSVIPC
             CONFIG_POSIX_MQUEUE
             CONFIG_IPC_NS
             CONFIG_PID_NS
             CONFIG_DEVTMPFS
+            CONFIG_DEVTMPFS_MOUNT
             CONFIG_NETFILTER_XT_MATCH_ADDRTYPE
             CONFIG_USER_NS
             CONFIG_NETFILTER_XT_TARGET_REJECT
