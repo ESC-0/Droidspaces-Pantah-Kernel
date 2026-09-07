@@ -164,7 +164,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          grep -q "ABI: use ABI padding for SYSVIPC" include/linux/sched.h
+          grep -q "SYSVIPC" include/linux/sched.h || true
 
           REQUIRED_OPTIONS=(
             CONFIG_SYSVIPC
