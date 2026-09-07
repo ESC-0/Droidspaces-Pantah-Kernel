@@ -67,7 +67,7 @@ jobs:
         run: |
           set -eu
 
-          PATCH="$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kABI_6_7_8.patch"
+          PATCH="$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch"
 
           if [ ! -f "$PATCH" ]; then
             echo "Required patch was not found:"
@@ -115,35 +115,20 @@ jobs:
             fi
           }
 
-          # IPC
           set_config CONFIG_SYSVIPC
           set_config CONFIG_POSIX_MQUEUE
-
-          # Namespaces
           set_config CONFIG_IPC_NS
           set_config CONFIG_PID_NS
-
-          # Hardware access
           set_config CONFIG_DEVTMPFS
-
-          # Enhanced NAT support
           set_config CONFIG_NETFILTER_XT_MATCH_ADDRTYPE
-
-          # Optional settings recommended by the guide
           set_config CONFIG_USER_NS
-
-          # UFW support
           set_config CONFIG_NETFILTER_XT_TARGET_REJECT
           set_config CONFIG_NETFILTER_XT_TARGET_LOG
           set_config CONFIG_NETFILTER_XT_MATCH_RECENT
-
-          # Fail2ban support
           set_config CONFIG_IP_SET
           set_config CONFIG_IP_SET_HASH_IP
           set_config CONFIG_IP_SET_HASH_NET
           set_config CONFIG_NETFILTER_XT_SET
-
-          # tmpfs xattr and POSIX ACL support
           set_config CONFIG_TMPFS_POSIX_ACL
           set_config CONFIG_TMPFS_XATTR
 
