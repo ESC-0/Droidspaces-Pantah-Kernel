@@ -70,8 +70,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          KERNEL_MANIFEST_ROOT="$GITHUB_WORKSPACE/kernel"
-
           PATCH="$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch"
 
           if [ ! -f "$PATCH" ]; then
@@ -80,18 +78,16 @@ jobs:
 
           if [ ! -f "$PATCH" ]; then
             echo "Required SYSVIPC kABI patch was not found."
-
             find \
               "$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12" \
               -type f \
               -print \
               | sort
-
             exit 1
           fi
 
           PATCH_TARGET="$(
-            find "$KERNEL_MANIFEST_ROOT" \
+            find "$GITHUB_WORKSPACE/kernel" \
               -type f \
               -path '*/include/linux/sched.h' \
               -print \
@@ -106,27 +102,16 @@ jobs:
           KERNEL_ROOT="${PATCH_TARGET%/include/linux/sched.h}"
 
           if [ ! -f "$KERNEL_ROOT/Makefile" ]; then
-            echo "Invalid kernel root:"
-            echo "$KERNEL_ROOT"
+            echo "Invalid kernel root: $KERNEL_ROOT"
             exit 1
           fi
 
           cd "$KERNEL_ROOT"
 
-          echo "Kernel root:"
-          pwd
-
-          echo "Kernel version:"
-          make -s kernelversion
-
-          if grep -q "ABI: use ABI padding for SYSVIPC" \
-            include/linux/sched.h; then
+          if grep -q "ABI: use ABI padding for SYSVIPC" include/linux/sched.h; then
             echo "SYSVIPC kABI patch is already applied."
           else
-            echo "Checking patch..."
             patch --dry-run --batch --forward -p1 < "$PATCH"
-
-            echo "Applying patch..."
             patch --batch --forward -p1 < "$PATCH"
           fi
 
@@ -145,21 +130,16 @@ jobs:
 
           if [ -z "$CONFIG" ]; then
             echo "Could not find gki_defconfig."
-
-            echo "Available arm64 defconfig files:"
             find "$GITHUB_WORKSPACE/kernel" \
               -type f \
               -path '*/arch/arm64/configs/*defconfig' \
               -print \
               | sort
-
             exit 1
           fi
 
           echo "CONFIG=$CONFIG" >> "$GITHUB_OUTPUT"
-
-          echo "Using configuration:"
-          echo "$CONFIG"
+          echo "Using configuration: $CONFIG"
 
       - name: Enable recommended GKI configuration
         env:
@@ -198,68 +178,32 @@ jobs:
           set_config CONFIG_TMPFS_POSIX_ACL
           set_config CONFIG_TMPFS_XATTR
 
-          echo "Final configuration:"
           grep -E \
             '^(CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE|CONFIG_IPC_NS|CONFIG_PID_NS|CONFIG_DEVTMPFS|CONFIG_NETFILTER_XT_MATCH_ADDRTYPE|CONFIG_USER_NS|CONFIG_NETFILTER_XT_TARGET_REJECT|CONFIG_NETFILTER_XT_TARGET_LOG|CONFIG_NETFILTER_XT_MATCH_RECENT|CONFIG_IP_SET|CONFIG_IP_SET_HASH_IP|CONFIG_IP_SET_HASH_NET|CONFIG_NETFILTER_XT_SET|CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR)=' \
             "$CONFIG" \
             | sort
 
-      - name: Prepare clean Bazel output directory
+      - name: Prepare Bazel output directory
         working-directory: kernel
         run: |
           set -euo pipefail
-
           rm -rf out/bazel
           mkdir -p out/bazel
 
-      - name: Locate Bazel kernel distribution target
+      - name: Verify available Bazel targets
         working-directory: kernel
         run: |
           set -euo pipefail
 
-          if [ ! -f common/BUILD.bazel ] \
-            && [ ! -f common/BUILD ]; then
+          if [ ! -f common/BUILD.bazel ] && [ ! -f common/BUILD ]; then
             echo "The common kernel build package was not found."
-
-            find . \
-              -maxdepth 3 \
-              \( -name BUILD -o -name BUILD.bazel \) \
-              -print \
-              | sort
-
             exit 1
           fi
 
-          echo "Available targets in //common:"
+          echo "Available kernel targets:"
           tools/bazel query '//common:*' --output=label | sort
 
-          TARGET="$(
-            tools/bazel query '//common:*' --output=label \
-              | grep -E '^//common:.*(_aarch64)?_dist$' \
-              | head -n 1 || true
-          )"
-
-          if [ -z "$TARGET" ]; then
-            TARGET="$(
-              tools/bazel query '//common:*' --output=label \
-                | grep -E '^//common:(kernel_aarch64|kernel_dist|kernel)$' \
-                | head -n 1 || true
-            )
-          fi
-
-          if [ -z "$TARGET" ]; then
-            echo "No usable kernel build or distribution target was found in //common."
-            echo "Targets exposed by the kernel source:"
-            tools/bazel query '//common:*' --output=label | sort
-            exit 1
-          fi
-
-          echo "Using target:"
-          echo "$TARGET"
-
-          echo "KERNEL_DIST_TARGET=$TARGET" >> "$GITHUB_ENV"
-
-      - name: Build Pixel 7 kernel
+      - name: Build Pixel 7 kernel images
         working-directory: kernel
         run: |
           set -euo pipefail
@@ -267,9 +211,28 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE/kernel/dist"
           mkdir -p "$GITHUB_WORKSPACE/kernel/dist"
 
-          tools/bazel run "$KERNEL_DIST_TARGET" \
-            -- \
-            --destdir="$GITHUB_WORKSPACE/kernel/dist"
+          tools/bazel build \
+            --config=local \
+            //common:kernel_aarch64_images
+
+          mapfile -t OUTPUTS < <(
+            tools/bazel cquery \
+              //common:kernel_aarch64_images \
+              --output=files
+          )
+
+          if [ "${#OUTPUTS[@]}" -eq 0 ]; then
+            echo "Bazel produced no kernel image files."
+            exit 1
+          fi
+
+          for OUTPUT in "${OUTPUTS[@]}"; do
+            if [ -f "$OUTPUT" ]; then
+              cp -v "$OUTPUT" "$GITHUB_WORKSPACE/kernel/dist/"
+            fi
+          done
+
+          find "$GITHUB_WORKSPACE/kernel/dist" -type f -print | sort
 
       - name: Validate kernel output
         run: |
@@ -278,13 +241,9 @@ jobs:
           DIST="$GITHUB_WORKSPACE/kernel/dist"
 
           if [ ! -d "$DIST" ]; then
-            echo "Kernel distribution directory was not created:"
-            echo "$DIST"
+            echo "Kernel distribution directory was not created."
             exit 1
           fi
-
-          echo "Kernel distribution contents:"
-          find "$DIST" -type f -print | sort
 
           if ! find "$DIST" -type f \
             \( \
@@ -292,11 +251,11 @@ jobs:
               -o -name 'Image.lz4' \
               -o -name 'Image.gz' \
               -o -name '*.img' \
-              -o -name '*.zip' \
+              -o -name '*.ko' \
             \) \
             -print \
             | grep -q .; then
-            echo "No kernel image or flashable artifact was produced."
+            echo "No kernel image or module artifact was produced."
             exit 1
           fi
 
