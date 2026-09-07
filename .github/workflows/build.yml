@@ -215,15 +215,14 @@ jobs:
             --nobuild_runfile_links \
             //common:kernel_aarch64
 
-          tools/bazel run \
+          tools/bazel build \
             --config=local \
             --spawn_strategy=local \
             --strategy=KernelBuild=local \
             --disk_cache= \
             --repository_cache= \
-            //common:kernel_aarch64_dist \
-            -- \
-            --destdir="$GITHUB_WORKSPACE/kernel/dist"
+            //common:kernel_aarch64_images
+
 
           find "$GITHUB_WORKSPACE/kernel/dist" -type f -print | sort
 
