@@ -204,15 +204,12 @@ jobs:
           rm -rf out bazel-bin bazel-out bazel-testlogs dist
           mkdir -p dist
 
-          tools/bazel shutdown || true
-
           tools/bazel build \
             --config=local \
             --spawn_strategy=local \
             --strategy=KernelBuild=local \
             --disk_cache= \
             --repository_cache= \
-            --nobuild_runfile_links \
             //common:kernel_aarch64
 
           tools/bazel build \
@@ -223,8 +220,17 @@ jobs:
             --repository_cache= \
             //common:kernel_aarch64_images
 
+          find . -type f \
+            \( \
+              -name 'Image' \
+              -o -name 'Image.lz4' \
+              -o -name 'Image.gz' \
+              -o -name '*.img' \
+            \) \
+            -not -path './.git/*' \
+            -exec cp -v {} dist/ \;
 
-          find "$GITHUB_WORKSPACE/kernel/dist" -type f -print | sort
+          find dist -type f -print | sort
 
       - name: Validate compiled kernel
         run: |
@@ -232,18 +238,11 @@ jobs:
 
           DIST="$GITHUB_WORKSPACE/kernel/dist"
 
-          if ! find "$DIST" -type f \
-            \( \
-              -name 'Image' \
-              -o -name 'Image.lz4' \
-              -o -name 'Image.gz' \
-              -o -name '*.img' \
-            \) \
-            -print | grep -q .; then
-            echo "No compiled kernel image was produced."
-            find "$DIST" -type f -print
-            exit 1
-          fi
+          find "$DIST" -type f -print
+
+          test -n "$(find "$DIST" -type f \
+            \( -name 'Image' -o -name 'Image.lz4' -o -name 'Image.gz' -o -name '*.img' \) \
+            -print -quit)"
 
           if ! grep -R \
             -q "ABI: use ABI padding for SYSVIPC" \
