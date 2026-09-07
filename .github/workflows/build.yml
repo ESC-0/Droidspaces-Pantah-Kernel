@@ -125,17 +125,39 @@ jobs:
           echo "Applying patch..."
           patch --batch --forward -p1 < "$PATCH"
 
-      - name: Enable recommended GKI configuration
+      - name: Locate GKI configuration
+        id: locate-config
         run: |
           set -euo pipefail
 
-          CONFIG="$GITHUB_WORKSPACE/kernel/common/arch/arm64/configs/gki_defconfig"
+          CONFIG="$(
+            find "$GITHUB_WORKSPACE/kernel" \
+              -type f \
+              -path '*/arch/arm64/configs/gki_defconfig' \
+              -print \
+              | head -n 1
+          )"
 
-          if [ ! -f "$CONFIG" ]; then
-            echo "Could not find:"
-            echo "$CONFIG"
+          if [ -z "$CONFIG" ]; then
+            echo "Could not find gki_defconfig in the synced kernel source."
+            echo "Available arm64 defconfig files:"
+            find "$GITHUB_WORKSPACE/kernel" \
+              -type f \
+              -path '*/arch/arm64/configs/*defconfig' \
+              -print \
+              | sort
             exit 1
           fi
+
+          echo "CONFIG=$CONFIG" >> "$GITHUB_OUTPUT"
+          echo "Using configuration:"
+          echo "$CONFIG"
+
+      - name: Enable recommended GKI configuration
+        env:
+          CONFIG: ${{ steps.locate-config.outputs.CONFIG }}
+        run: |
+          set -euo pipefail
 
           cp "$CONFIG" "$CONFIG.before-droidspaces"
 
