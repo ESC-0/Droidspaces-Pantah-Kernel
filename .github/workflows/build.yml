@@ -63,9 +63,10 @@ jobs:
             "$GITHUB_WORKSPACE/droidspaces"
 
       - name: Apply SYSVIPC kABI patch
-        working-directory: kernel/common
         run: |
-          set -eu
+          set -euo pipefail
+
+          KERNEL_MANIFEST_ROOT="$GITHUB_WORKSPACE/kernel"
 
           PATCH="$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch"
 
@@ -74,23 +75,61 @@ jobs:
             echo "$PATCH"
             echo
             echo "Available GKI patches:"
-            find "$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI" \
-              -type f -print
+            find \
+              "$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI" \
+              -type f \
+              -print
             exit 1
           fi
 
+          PATCH_TARGET="$(
+            find "$KERNEL_MANIFEST_ROOT" \
+              -type f \
+              -path '*/include/linux/sched.h' \
+              -print \
+              | head -n 1
+          )"
+
+          if [ -z "$PATCH_TARGET" ]; then
+            echo "Could not locate include/linux/sched.h in the synced kernel source."
+            find "$KERNEL_MANIFEST_ROOT" \
+              -type f \
+              -path '*/include/linux/*.h' \
+              | head -n 50
+            exit 1
+          fi
+
+          KERNEL_ROOT="${PATCH_TARGET%/include/linux/sched.h}"
+
+          if [ ! -f "$KERNEL_ROOT/Makefile" ]; then
+            echo "Located sched.h, but its kernel root is invalid:"
+            echo "$KERNEL_ROOT"
+            exit 1
+          fi
+
+          echo "Kernel root: $KERNEL_ROOT"
+          echo "Kernel version:"
+          make -s -C "$KERNEL_ROOT" kernelversion
+
+          if grep -q "ABI: use ABI padding for SYSVIPC" \
+            "$KERNEL_ROOT/include/linux/sched.h"; then
+            echo "SYSVIPC kABI patch is already applied."
+            exit 0
+          fi
+
+          cd "$KERNEL_ROOT"
+
           echo "Checking patch..."
-          patch --dry-run -p1 < "$PATCH"
+          patch --dry-run --batch --forward -p1 < "$PATCH"
 
           echo "Applying patch..."
-          patch -p1 < "$PATCH"
+          patch --batch --forward -p1 < "$PATCH"
 
       - name: Enable recommended GKI configuration
-        working-directory: kernel/common
         run: |
-          set -eu
+          set -euo pipefail
 
-          CONFIG="arch/arm64/configs/gki_defconfig"
+          CONFIG="$GITHUB_WORKSPACE/kernel/common/arch/arm64/configs/gki_defconfig"
 
           if [ ! -f "$CONFIG" ]; then
             echo "Could not find:"
@@ -138,7 +177,7 @@ jobs:
       - name: Find Pixel build target
         working-directory: kernel
         run: |
-          set -eu
+          set -euo pipefail
 
           tools/bazel query \
             'kind(".*_dist rule", //...)' \
