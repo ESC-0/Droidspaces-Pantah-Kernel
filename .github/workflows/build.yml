@@ -41,6 +41,8 @@ jobs:
 
       - name: Download Pixel 7 kernel source
         run: |
+          set -euo pipefail
+
           mkdir -p "$GITHUB_WORKSPACE/kernel"
           cd "$GITHUB_WORKSPACE/kernel"
 
@@ -57,6 +59,8 @@ jobs:
 
       - name: Download Droidspaces kernel patches
         run: |
+          set -euo pipefail
+
           git clone \
             --depth=1 \
             https://github.com/ravindu644/Droidspaces-OSS.git \
@@ -91,39 +95,36 @@ jobs:
           )"
 
           if [ -z "$PATCH_TARGET" ]; then
-            echo "Could not locate include/linux/sched.h in the synced kernel source."
-            find "$KERNEL_MANIFEST_ROOT" \
-              -type f \
-              -path '*/include/linux/*.h' \
-              | head -n 50
+            echo "Could not locate include/linux/sched.h."
             exit 1
           fi
 
           KERNEL_ROOT="${PATCH_TARGET%/include/linux/sched.h}"
 
           if [ ! -f "$KERNEL_ROOT/Makefile" ]; then
-            echo "Located sched.h, but its kernel root is invalid:"
+            echo "Invalid kernel root:"
             echo "$KERNEL_ROOT"
             exit 1
           fi
 
-          echo "Kernel root: $KERNEL_ROOT"
-          echo "Kernel version:"
-          make -s -C "$KERNEL_ROOT" kernelversion
-
-          if grep -q "ABI: use ABI padding for SYSVIPC" \
-            "$KERNEL_ROOT/include/linux/sched.h"; then
-            echo "SYSVIPC kABI patch is already applied."
-            exit 0
-          fi
-
           cd "$KERNEL_ROOT"
 
-          echo "Checking patch..."
-          patch --dry-run --batch --forward -p1 < "$PATCH"
+          echo "Kernel root:"
+          pwd
 
-          echo "Applying patch..."
-          patch --batch --forward -p1 < "$PATCH"
+          echo "Kernel version:"
+          make -s kernelversion
+
+          if grep -q "ABI: use ABI padding for SYSVIPC" \
+            include/linux/sched.h; then
+            echo "SYSVIPC kABI patch is already applied."
+          else
+            echo "Checking patch..."
+            patch --dry-run --batch --forward -p1 < "$PATCH"
+
+            echo "Applying patch..."
+            patch --batch --forward -p1 < "$PATCH"
+          fi
 
       - name: Locate GKI configuration
         id: locate-config
@@ -139,17 +140,20 @@ jobs:
           )"
 
           if [ -z "$CONFIG" ]; then
-            echo "Could not find gki_defconfig in the synced kernel source."
+            echo "Could not find gki_defconfig."
+
             echo "Available arm64 defconfig files:"
             find "$GITHUB_WORKSPACE/kernel" \
               -type f \
               -path '*/arch/arm64/configs/*defconfig' \
               -print \
               | sort
+
             exit 1
           fi
 
           echo "CONFIG=$CONFIG" >> "$GITHUB_OUTPUT"
+
           echo "Using configuration:"
           echo "$CONFIG"
 
@@ -162,7 +166,7 @@ jobs:
           cp "$CONFIG" "$CONFIG.before-droidspaces"
 
           set_config() {
-            NAME="$1"
+            local NAME="$1"
 
             if grep -q "^${NAME}=" "$CONFIG"; then
               sed -i "s/^${NAME}=.*/${NAME}=y/" "$CONFIG"
@@ -196,59 +200,89 @@ jobs:
             "$CONFIG" \
             | sort
 
-      - name: Find Pixel build target
+      - name: Prepare clean Bazel output directory
         working-directory: kernel
         run: |
           set -euo pipefail
 
-          tools/bazel query \
-            'kind(".*_dist rule", //...)' \
-            --output=label \
-            | tee /tmp/all-dist-targets.txt
+          rm -rf out/bazel
 
-          TARGET="$(
-            grep -Ei 'pantah|cheetah|gs101|pixel' \
-              /tmp/all-dist-targets.txt \
-              | head -n 1 || true
-          )"
+          mkdir -p out/bazel
 
-          if [ -z "$TARGET" ]; then
-            echo "No Pixel/pantah distribution target was found."
-            cat /tmp/all-dist-targets.txt
+      - name: Verify Pixel 7 distribution target
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+
+          TARGET="//private/gs-google:gs101_dist"
+
+          if [ ! -f private/gs-google/BUILD.bazel ] \
+            && [ ! -f private/gs-google/BUILD ]; then
+            echo "Expected Pixel 7 build package was not found:"
+            echo "private/gs-google"
+            find private -maxdepth 3 \
+              \( -name BUILD -o -name BUILD.bazel \) \
+              -print \
+              | sort
             exit 1
           fi
 
-          echo "Using target: $TARGET"
+          if ! tools/bazel query "$TARGET" \
+            --output=label \
+            > /tmp/pixel7-target.txt; then
+            echo "The Pixel 7 distribution target could not be loaded:"
+            cat /tmp/pixel7-target.txt || true
+            exit 1
+          fi
+
+          echo "Verified target:"
+          cat /tmp/pixel7-target.txt
+
           echo "KERNEL_DIST_TARGET=$TARGET" >> "$GITHUB_ENV"
 
       - name: Build Pixel 7 kernel
         working-directory: kernel
         run: |
-          tools/bazel run "$KERNEL_DIST_TARGET"
+          set -euo pipefail
 
-      - name: Collect kernel output
-        if: success()
-        working-directory: kernel
+          tools/bazel run "$KERNEL_DIST_TARGET" \
+            -- \
+            --destdir="$GITHUB_WORKSPACE/kernel/dist"
+
+      - name: Validate kernel output
         run: |
-          mkdir -p ../artifacts
+          set -euo pipefail
 
-          find bazel-bin -type f \
+          DIST="$GITHUB_WORKSPACE/kernel/dist"
+
+          if [ ! -d "$DIST" ]; then
+            echo "Kernel distribution directory was not created:"
+            echo "$DIST"
+            exit 1
+          fi
+
+          echo "Kernel distribution contents:"
+          find "$DIST" -type f -print | sort
+
+          if ! find "$DIST" -type f \
             \( \
-              -name '*.img' \
-              -o -name '*.zip' \
-              -o -name 'Image' \
-              -o -name 'Image.gz' \
+              -name 'Image' \
               -o -name 'Image.lz4' \
+              -o -name 'Image.gz' \
+              -o -name '*.img' \
+              -o -name '*.zip' \
             \) \
-            -exec cp --parents {} ../artifacts/ \; || true
-
-          find ../artifacts -type f -ls
+            -print \
+            | grep -q .; then
+            echo "No kernel image or flashable artifact was produced."
+            exit 1
+          fi
 
       - name: Upload compiled kernel
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: pixel7-pantah-droidspaces-kernel
-          path: artifacts/
+          path: kernel/dist/
           if-no-files-found: error
           retention-days: 7
