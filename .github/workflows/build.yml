@@ -63,7 +63,7 @@ jobs:
             "$GITHUB_WORKSPACE/droidspaces"
 
       - name: Apply SYSVIPC kABI patch
-        working-directory: kernel
+        working-directory: kernel/common
         run: |
           set -eu
 
@@ -86,18 +86,15 @@ jobs:
           patch -p1 < "$PATCH"
 
       - name: Enable recommended GKI configuration
-        working-directory: kernel
+        working-directory: kernel/common
         run: |
           set -eu
 
-          CONFIG="common/arch/arm64/configs/gki_defconfig"
+          CONFIG="arch/arm64/configs/gki_defconfig"
 
           if [ ! -f "$CONFIG" ]; then
             echo "Could not find:"
             echo "$CONFIG"
-            echo
-            echo "Searching for gki_defconfig:"
-            find . -path '*/arch/arm64/configs/gki_defconfig' -print
             exit 1
           fi
 
@@ -143,8 +140,6 @@ jobs:
         run: |
           set -eu
 
-          echo "Searching for Pixel distribution targets..."
-
           tools/bazel query \
             'kind(".*_dist rule", //...)' \
             --output=label \
@@ -158,20 +153,16 @@ jobs:
 
           if [ -z "$TARGET" ]; then
             echo "No Pixel/pantah distribution target was found."
-            echo "Available distribution targets:"
             cat /tmp/all-dist-targets.txt
             exit 1
           fi
 
-          echo "Using target:"
-          echo "$TARGET"
-
+          echo "Using target: $TARGET"
           echo "KERNEL_DIST_TARGET=$TARGET" >> "$GITHUB_ENV"
 
       - name: Build Pixel 7 kernel
         working-directory: kernel
         run: |
-          echo "Building $KERNEL_DIST_TARGET"
           tools/bazel run "$KERNEL_DIST_TARGET"
 
       - name: Collect kernel output
@@ -190,7 +181,6 @@ jobs:
             \) \
             -exec cp --parents {} ../artifacts/ \; || true
 
-          echo "Build artifacts:"
           find ../artifacts -type f -ls
 
       - name: Upload compiled kernel
