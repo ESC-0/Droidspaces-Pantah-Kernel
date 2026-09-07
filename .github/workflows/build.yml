@@ -31,11 +31,9 @@ jobs:
       - name: Install repo
         run: |
           mkdir -p "$HOME/bin"
-
           curl -L \
             https://storage.googleapis.com/git-repo-downloads/repo \
             -o "$HOME/bin/repo"
-
           chmod +x "$HOME/bin/repo"
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
@@ -57,7 +55,10 @@ jobs:
             --no-tags \
             -j2
 
-      - name: Download Droidspaces kernel patches
+          test -f aosp/Makefile
+          test -f aosp/arch/arm64/configs/gki_defconfig
+
+      - name: Download Droidspaces source
         run: |
           set -euo pipefail
 
@@ -66,87 +67,62 @@ jobs:
             https://github.com/ravindu644/Droidspaces-OSS.git \
             "$GITHUB_WORKSPACE/droidspaces"
 
-      - name: Apply SYSVIPC kABI patch
+      - name: Apply required GKI patches
+        working-directory: kernel/aosp
         run: |
           set -euo pipefail
 
-          PATCH="$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch"
+          PATCH_DIR="$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12"
+          SYSVIPC_PATCH="$PATCH_DIR/001.GKI-below-6.12-fix_sysvipc_kABI_6_7_8.patch"
+          POSIX_PATCH="$PATCH_DIR/002.5.10_or_lower_use_android_abi_padding_for_posix_mqueue.patch"
 
-          if [ ! -f "$PATCH" ]; then
-            PATCH="$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kABI_6_7_8.patch"
+          if [ ! -f "$SYSVIPC_PATCH" ]; then
+            SYSVIPC_PATCH="$PATCH_DIR/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch"
           fi
 
-          if [ ! -f "$PATCH" ]; then
-            echo "Required SYSVIPC kABI patch was not found."
-            find \
-              "$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12" \
-              -type f \
-              -print \
-              | sort
+          if [ ! -f "$SYSVIPC_PATCH" ]; then
+            echo "SYSVIPC kABI patch not found."
+            find "$PATCH_DIR" -maxdepth 1 -type f -print | sort
             exit 1
           fi
-
-          PATCH_TARGET="$(
-            find "$GITHUB_WORKSPACE/kernel" \
-              -type f \
-              -path '*/include/linux/sched.h' \
-              -print \
-              | head -n 1
-          )"
-
-          if [ -z "$PATCH_TARGET" ]; then
-            echo "Could not locate include/linux/sched.h."
-            exit 1
-          fi
-
-          KERNEL_ROOT="${PATCH_TARGET%/include/linux/sched.h}"
-
-          if [ ! -f "$KERNEL_ROOT/Makefile" ]; then
-            echo "Invalid kernel root: $KERNEL_ROOT"
-            exit 1
-          fi
-
-          cd "$KERNEL_ROOT"
 
           if grep -q "ABI: use ABI padding for SYSVIPC" include/linux/sched.h; then
             echo "SYSVIPC kABI patch is already applied."
           else
-            patch --dry-run --batch --forward -p1 < "$PATCH"
-            patch --batch --forward -p1 < "$PATCH"
+            patch --dry-run --batch --forward -p1 < "$SYSVIPC_PATCH"
+            patch --batch --forward -p1 < "$SYSVIPC_PATCH"
           fi
 
-      - name: Locate GKI configuration
-        id: locate-config
+          KERNEL_VERSION="$(sed -n 's/^VERSION = //p' Makefile).$(sed -n 's/^PATCHLEVEL = //p' Makefile)"
+
+          case "$KERNEL_VERSION" in
+            5.10.*|5.4.*)
+              if [ ! -f "$POSIX_PATCH" ]; then
+                echo "Required POSIX_MQUEUE kABI patch not found."
+                exit 1
+              fi
+
+              if grep -q "android_abi_padding_for_posix_mqueue" include/linux/mqueue.h 2>/dev/null; then
+                echo "POSIX_MQUEUE kABI patch is already applied."
+              else
+                patch --dry-run --batch --forward -p1 < "$POSIX_PATCH"
+                patch --batch --forward -p1 < "$POSIX_PATCH"
+              fi
+              ;;
+            *)
+              echo "Kernel version $KERNEL_VERSION does not require the 5.10 POSIX_MQUEUE patch."
+              ;;
+          esac
+
+          git diff --check
+          git diff -- include/linux/sched.h include/linux/mqueue.h
+
+      - name: Configure GKI kernel
+        working-directory: kernel/aosp
         run: |
           set -euo pipefail
 
-          CONFIG="$(
-            find "$GITHUB_WORKSPACE/kernel" \
-              -type f \
-              -path '*/arch/arm64/configs/gki_defconfig' \
-              -print \
-              | head -n 1
-          )"
-
-          if [ -z "$CONFIG" ]; then
-            echo "Could not find gki_defconfig."
-            find "$GITHUB_WORKSPACE/kernel" \
-              -type f \
-              -path '*/arch/arm64/configs/*defconfig' \
-              -print \
-              | sort
-            exit 1
-          fi
-
-          echo "CONFIG=$CONFIG" >> "$GITHUB_OUTPUT"
-          echo "Using configuration: $CONFIG"
-
-      - name: Enable recommended GKI configuration
-        env:
-          CONFIG: ${{ steps.locate-config.outputs.CONFIG }}
-        run: |
-          set -euo pipefail
-
+          CONFIG="arch/arm64/configs/gki_defconfig"
           cp "$CONFIG" "$CONFIG.before-droidspaces"
 
           set_config() {
@@ -157,7 +133,7 @@ jobs:
             elif grep -q "^# ${NAME} is not set$" "$CONFIG"; then
               sed -i "s/^# ${NAME} is not set$/${NAME}=y/" "$CONFIG"
             else
-              printf '\n%s=y\n' "$NAME" >> "$CONFIG"
+              printf '%s\n' "${NAME}=y" >> "$CONFIG"
             fi
           }
 
@@ -180,105 +156,71 @@ jobs:
 
           grep -E \
             '^(CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE|CONFIG_IPC_NS|CONFIG_PID_NS|CONFIG_DEVTMPFS|CONFIG_NETFILTER_XT_MATCH_ADDRTYPE|CONFIG_USER_NS|CONFIG_NETFILTER_XT_TARGET_REJECT|CONFIG_NETFILTER_XT_TARGET_LOG|CONFIG_NETFILTER_XT_MATCH_RECENT|CONFIG_IP_SET|CONFIG_IP_SET_HASH_IP|CONFIG_IP_SET_HASH_NET|CONFIG_NETFILTER_XT_SET|CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR)=' \
-            "$CONFIG" \
-            | sort
+            "$CONFIG" | sort
 
-      - name: Prepare Bazel output directory
-        working-directory: kernel
-        run: |
-          set -euo pipefail
-          rm -rf out/bazel
-          mkdir -p out/bazel
-
-      - name: Verify available Bazel targets
-        working-directory: kernel
+      - name: Verify source modifications
+        working-directory: kernel/aosp
         run: |
           set -euo pipefail
 
-          if [ ! -f common/BUILD.bazel ] && [ ! -f common/BUILD ]; then
-            echo "The common kernel build package was not found."
-            exit 1
-          fi
+          grep -q "ABI: use ABI padding for SYSVIPC" include/linux/sched.h
 
-          tools/bazel query '//common:*' --output=label | sort
+          for option in \
+            CONFIG_SYSVIPC \
+            CONFIG_POSIX_MQUEUE \
+            CONFIG_IPC_NS \
+            CONFIG_PID_NS \
+            CONFIG_DEVTMPFS \
+            CONFIG_NETFILTER_XT_MATCH_ADDRTYPE \
+            CONFIG_USER_NS \
+            CONFIG_NETFILTER_XT_TARGET_REJECT \
+            CONFIG_NETFILTER_XT_TARGET_LOG \
+            CONFIG_NETFILTER_XT_MATCH_RECENT \
+            CONFIG_IP_SET \
+            CONFIG_IP_SET_HASH_IP \
+            CONFIG_IP_SET_HASH_NET \
+            CONFIG_NETFILTER_XT_SET \
+            CONFIG_TMPFS_POSIX_ACL \
+            CONFIG_TMPFS_XATTR; do
+            grep -q "^${option}=y$" arch/arm64/configs/gki_defconfig
+          done
 
-      - name: Build patched Pixel 7 kernel
+      - name: Build kernel from modified source
         working-directory: kernel
         run: |
           set -euo pipefail
 
-          rm -rf "$GITHUB_WORKSPACE/kernel/dist"
-          mkdir -p "$GITHUB_WORKSPACE/kernel/dist"
+          rm -rf out bazel-bin bazel-out bazel-testlogs dist
+          mkdir -p dist
+
+          tools/bazel shutdown || true
 
           tools/bazel build \
             --config=local \
+            --spawn_strategy=local \
+            --strategy=KernelBuild=local \
+            --disk_cache= \
+            --repository_cache= \
+            --nobuild_runfile_links \
             //common:kernel_aarch64
 
-          tools/bazel build \
+          tools/bazel run \
             --config=local \
-            //common:kernel_aarch64_images
+            --spawn_strategy=local \
+            --strategy=KernelBuild=local \
+            --disk_cache= \
+            --repository_cache= \
+            //common:kernel_aarch64_dist \
+            -- \
+            --destdir="$GITHUB_WORKSPACE/kernel/dist"
 
-          mkdir -p bazel-output-files
-
-          tools/bazel cquery \
-            --config=local \
-            //common:kernel_aarch64 \
-            --output=files \
-            > bazel-output-files/kernel-files.txt || true
-
-          tools/bazel cquery \
-            --config=local \
-            //common:kernel_aarch64_images \
-            --output=files \
-            > bazel-output-files/image-files.txt || true
-
-          cat bazel-output-files/kernel-files.txt
-          cat bazel-output-files/image-files.txt
-
-          while IFS= read -r FILE; do
-            if [ -f "$FILE" ]; then
-              case "$FILE" in
-                *Image*|*.img|*.ko|*vmlinux*|*System.map*|*modules*|*dtb*)
-                  cp -v "$FILE" "$GITHUB_WORKSPACE/kernel/dist/" || true
-                  ;;
-              esac
-            fi
-          done < <(
-            cat \
-              bazel-output-files/kernel-files.txt \
-              bazel-output-files/image-files.txt
-          )
-
-          find bazel-bin bazel-out out -type f \
-            \( \
-              -name 'Image' \
-              -o -name 'Image.lz4' \
-              -o -name 'Image.gz' \
-              -o -name '*.img' \
-              -o -name '*.ko' \
-              -o -name 'vmlinux' \
-              -o -name 'System.map' \
-              -o -name '*.dtb' \
-            \) \
-            -print \
-            2>/dev/null \
-            | while IFS= read -r FILE; do
-                cp -v "$FILE" "$GITHUB_WORKSPACE/kernel/dist/" || true
-              done
-
-          echo "Generated artifacts:"
           find "$GITHUB_WORKSPACE/kernel/dist" -type f -print | sort
 
-      - name: Validate kernel output
+      - name: Validate compiled kernel
         run: |
           set -euo pipefail
 
           DIST="$GITHUB_WORKSPACE/kernel/dist"
-
-          if [ ! -d "$DIST" ]; then
-            echo "Kernel distribution directory was not created."
-            exit 1
-          fi
 
           if ! find "$DIST" -type f \
             \( \
@@ -286,13 +228,17 @@ jobs:
               -o -name 'Image.lz4' \
               -o -name 'Image.gz' \
               -o -name '*.img' \
-              -o -name '*.ko' \
-              -o -name 'vmlinux' \
             \) \
-            -print \
-            | grep -q .; then
-            echo "No kernel image or module artifact was produced."
+            -print | grep -q .; then
+            echo "No compiled kernel image was produced."
             find "$DIST" -type f -print
+            exit 1
+          fi
+
+          if ! grep -R \
+            -q "ABI: use ABI padding for SYSVIPC" \
+            "$GITHUB_WORKSPACE/kernel/aosp/include/linux/sched.h"; then
+            echo "The SYSVIPC kABI patch is missing from the source used for the build."
             exit 1
           fi
 
