@@ -74,7 +74,6 @@ jobs:
 
           PATCH_DIR="$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12"
           SYSVIPC_PATCH="$PATCH_DIR/001.GKI-below-6.12-fix_sysvipc_kABI_6_7_8.patch"
-          POSIX_PATCH="$PATCH_DIR/002.5.10_or_lower_use_android_abi_padding_for_posix_mqueue.patch"
 
           if [ ! -f "$SYSVIPC_PATCH" ]; then
             SYSVIPC_PATCH="$PATCH_DIR/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch"
@@ -92,27 +91,6 @@ jobs:
             patch --dry-run --batch --forward -p1 < "$SYSVIPC_PATCH"
             patch --batch --forward -p1 < "$SYSVIPC_PATCH"
           fi
-
-          KERNEL_VERSION="$(sed -n 's/^VERSION = //p' Makefile).$(sed -n 's/^PATCHLEVEL = //p' Makefile)"
-
-          case "$KERNEL_VERSION" in
-            6.1.*)
-              if [ ! -f "$POSIX_PATCH" ]; then
-                echo "Required POSIX_MQUEUE kABI patch not found."
-                exit 1
-              fi
-
-              if grep -q "android_abi_padding_for_posix_mqueue" include/linux/mqueue.h 2>/dev/null; then
-                echo "POSIX_MQUEUE kABI patch is already applied."
-              else
-                patch --dry-run --batch --forward -p1 < "$POSIX_PATCH"
-                patch --batch --forward -p1 < "$POSIX_PATCH"
-              fi
-              ;;
-            *)
-              echo "Kernel version $KERNEL_VERSION does not require the 5.10 POSIX_MQUEUE patch."
-              ;;
-          esac
 
           git diff --check
           git diff -- include/linux/sched.h include/linux/mqueue.h
