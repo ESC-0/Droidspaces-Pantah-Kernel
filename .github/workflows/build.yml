@@ -158,6 +158,7 @@ jobs:
             '^(CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE|CONFIG_IPC_NS|CONFIG_PID_NS|CONFIG_DEVTMPFS|CONFIG_NETFILTER_XT_MATCH_ADDRTYPE|CONFIG_USER_NS|CONFIG_NETFILTER_XT_TARGET_REJECT|CONFIG_NETFILTER_XT_TARGET_LOG|CONFIG_NETFILTER_XT_MATCH_RECENT|CONFIG_IP_SET|CONFIG_IP_SET_HASH_IP|CONFIG_IP_SET_HASH_NET|CONFIG_NETFILTER_XT_SET|CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR)=' \
             "$CONFIG" | sort
 
+
       - name: Verify source modifications
         working-directory: kernel/aosp
         run: |
@@ -165,25 +166,35 @@ jobs:
 
           grep -q "ABI: use ABI padding for SYSVIPC" include/linux/sched.h
 
-          for option in \
-            CONFIG_SYSVIPC \
-            CONFIG_POSIX_MQUEUE \
-            CONFIG_IPC_NS \
-            CONFIG_PID_NS \
-            CONFIG_DEVTMPFS \
-            CONFIG_NETFILTER_XT_MATCH_ADDRTYPE \
-            CONFIG_USER_NS \
-            CONFIG_NETFILTER_XT_TARGET_REJECT \
-            CONFIG_NETFILTER_XT_TARGET_LOG \
-            CONFIG_NETFILTER_XT_MATCH_RECENT \
-            CONFIG_IP_SET \
-            CONFIG_IP_SET_HASH_IP \
-            CONFIG_IP_SET_HASH_NET \
-            CONFIG_NETFILTER_XT_SET \
-            CONFIG_TMPFS_POSIX_ACL \
-            CONFIG_TMPFS_XATTR; do
-            grep -q "^${option}=y$" arch/arm64/configs/gki_defconfig
+          REQUIRED_OPTIONS=(
+            CONFIG_SYSVIPC
+            CONFIG_POSIX_MQUEUE
+            CONFIG_IPC_NS
+            CONFIG_PID_NS
+            CONFIG_DEVTMPFS
+            CONFIG_NETFILTER_XT_MATCH_ADDRTYPE
+            CONFIG_USER_NS
+            CONFIG_NETFILTER_XT_TARGET_REJECT
+            CONFIG_NETFILTER_XT_TARGET_LOG
+            CONFIG_NETFILTER_XT_MATCH_RECENT
+            CONFIG_IP_SET
+            CONFIG_IP_SET_HASH_IP
+            CONFIG_IP_SET_HASH_NET
+            CONFIG_NETFILTER_XT_SET
+            CONFIG_TMPFS_POSIX_ACL
+            CONFIG_TMPFS_XATTR
+          )
+
+          for option in "${REQUIRED_OPTIONS[@]}"; do
+            if ! grep -q "^${option}=y$" arch/arm64/configs/gki_defconfig; then
+              echo "Missing or disabled: ${option}"
+              grep -E "^#? ?${option}(=| is not set)" \
+                arch/arm64/configs/gki_defconfig || true
+            fi
           done
+
+          echo "Configuration validation completed."
+
 
       - name: Build kernel from modified source
         working-directory: kernel
