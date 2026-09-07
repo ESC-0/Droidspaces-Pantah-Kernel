@@ -200,10 +200,9 @@ jobs:
             exit 1
           fi
 
-          echo "Available kernel targets:"
           tools/bazel query '//common:*' --output=label | sort
 
-      - name: Build Pixel 7 kernel images
+      - name: Build patched Pixel 7 kernel
         working-directory: kernel
         run: |
           set -euo pipefail
@@ -213,25 +212,61 @@ jobs:
 
           tools/bazel build \
             --config=local \
+            //common:kernel_aarch64
+
+          tools/bazel build \
+            --config=local \
             //common:kernel_aarch64_images
 
-          mapfile -t OUTPUTS < <(
-            tools/bazel cquery \
-              //common:kernel_aarch64_images \
-              --output=files
+          mkdir -p bazel-output-files
+
+          tools/bazel cquery \
+            --config=local \
+            //common:kernel_aarch64 \
+            --output=files \
+            > bazel-output-files/kernel-files.txt || true
+
+          tools/bazel cquery \
+            --config=local \
+            //common:kernel_aarch64_images \
+            --output=files \
+            > bazel-output-files/image-files.txt || true
+
+          cat bazel-output-files/kernel-files.txt
+          cat bazel-output-files/image-files.txt
+
+          while IFS= read -r FILE; do
+            if [ -f "$FILE" ]; then
+              case "$FILE" in
+                *Image*|*.img|*.ko|*vmlinux*|*System.map*|*modules*|*dtb*)
+                  cp -v "$FILE" "$GITHUB_WORKSPACE/kernel/dist/" || true
+                  ;;
+              esac
+            fi
+          done < <(
+            cat \
+              bazel-output-files/kernel-files.txt \
+              bazel-output-files/image-files.txt
           )
 
-          if [ "${#OUTPUTS[@]}" -eq 0 ]; then
-            echo "Bazel produced no kernel image files."
-            exit 1
-          fi
+          find bazel-bin bazel-out out -type f \
+            \( \
+              -name 'Image' \
+              -o -name 'Image.lz4' \
+              -o -name 'Image.gz' \
+              -o -name '*.img' \
+              -o -name '*.ko' \
+              -o -name 'vmlinux' \
+              -o -name 'System.map' \
+              -o -name '*.dtb' \
+            \) \
+            -print \
+            2>/dev/null \
+            | while IFS= read -r FILE; do
+                cp -v "$FILE" "$GITHUB_WORKSPACE/kernel/dist/" || true
+              done
 
-          for OUTPUT in "${OUTPUTS[@]}"; do
-            if [ -f "$OUTPUT" ]; then
-              cp -v "$OUTPUT" "$GITHUB_WORKSPACE/kernel/dist/"
-            fi
-          done
-
+          echo "Generated artifacts:"
           find "$GITHUB_WORKSPACE/kernel/dist" -type f -print | sort
 
       - name: Validate kernel output
@@ -252,10 +287,12 @@ jobs:
               -o -name 'Image.gz' \
               -o -name '*.img' \
               -o -name '*.ko' \
+              -o -name 'vmlinux' \
             \) \
             -print \
             | grep -q .; then
             echo "No kernel image or module artifact was produced."
+            find "$DIST" -type f -print
             exit 1
           fi
 
