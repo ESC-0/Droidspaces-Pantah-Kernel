@@ -232,6 +232,12 @@ jobs:
 
           find dist -type f -print | sort
 
+          CONFIG="$(find kernel/out -name .config -type f -print -quit)"
+          test -n "$CONFIG"
+          
+          grep -E '^(CONFIG_NAMESPACES|CONFIG_PID_NS|CONFIG_DEVTMPFS|CONFIG_USER_NS)=' "$CONFIG"
+          
+
       - name: Validate compiled kernel
         run: |
           set -euo pipefail
