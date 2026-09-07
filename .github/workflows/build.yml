@@ -96,7 +96,7 @@ jobs:
           KERNEL_VERSION="$(sed -n 's/^VERSION = //p' Makefile).$(sed -n 's/^PATCHLEVEL = //p' Makefile)"
 
           case "$KERNEL_VERSION" in
-            5.10.*|5.4.*)
+            6.1.*)
               if [ ! -f "$POSIX_PATCH" ]; then
                 echo "Required POSIX_MQUEUE kABI patch not found."
                 exit 1
@@ -164,7 +164,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          grep -q "SYSVIPC" include/linux/sched.h || true
+          grep -q "ABI: use ABI padding for SYSVIPC" include/linux/sched.h || true
 
           REQUIRED_OPTIONS=(
             CONFIG_SYSVIPC
