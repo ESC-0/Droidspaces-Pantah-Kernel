@@ -1,4 +1,4 @@
-name: Build Pixel 7 kernel (3-pattern runs, fixed fragment)
+name: Build Pixel 7 kernel (3-pattern runs, debug & named logs)
 
 on:
   workflow_dispatch:
@@ -44,9 +44,12 @@ jobs:
           set -euo pipefail
           rm -rf "$GITHUB_WORKSPACE/droidspaces" || true
           git clone --depth=1 https://github.com/ravindu644/Droidspaces-OSS.git "$GITHUB_WORKSPACE/droidspaces"
-          # sanity check
-          if [ ! -d "$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI" ]; then
-            echo "WARNING: expected patch path not found under droidspaces repo"
+          # record existence / listing for debugging
+          mkdir -p /tmp/patch-results
+          if [ -d "${PATCH_BASE}" ]; then
+            ls -la "${PATCH_BASE}" > /tmp/patch-results/patch_base_list.txt || true
+          else
+            echo "PATCH_BASE missing: ${PATCH_BASE}" > /tmp/patch-results/patch_base_list.txt
           fi
 
       - name: Download Pixel7 kernel (shallow)
@@ -80,13 +83,12 @@ jobs:
         run: |
           set -euo pipefail
           set -x
-          # mapping and labels
           declare -A MAP=( ["6_7_8"]="678" ["3_4_5"]="345" ["1_2_3"]="123" )
           labels=( "6_7_8" "3_4_5" "1_2_3" )
 
           for label in "${labels[@]}"; do
             short="${MAP[$label]}"
-            LOGDIR="/tmp/patch-results/${label}"
+            LOGDIR="/tmp/patch-results/${short}"
             rm -rf "${LOGDIR}" || true
             mkdir -p "${LOGDIR}"
             workdir="aosp-patch-${label}"
@@ -94,18 +96,20 @@ jobs:
             cp -a aosp-base "${workdir}"
 
             PATCH="${PATCH_BASE}/001.GKI-below-6.12-fix_sysvipc_kabi_${label}.patch"
+            # write apply-status with short in name
             if [ ! -f "$PATCH" ]; then
-              echo "missing-patch: $PATCH" > "${LOGDIR}/apply-status.txt"
+              echo "missing-patch: $PATCH" > "${LOGDIR}/apply-status-${short}.txt"
             else
               pushd "${workdir}" >/dev/null || exit 1
               if git apply --reverse --check "$PATCH" 2>/dev/null; then
-                echo "already-applied" > "${LOGDIR}/apply-status.txt"
+                echo "already-applied" > "${LOGDIR}/apply-status-${short}.txt"
               elif git apply --check "$PATCH" 2>/dev/null && git apply "$PATCH"; then
-                echo "applied-clean" > "${LOGDIR}/apply-status.txt"
-                git diff --name-only > "${LOGDIR}/applied-files.txt" || true
+                echo "applied-clean" > "${LOGDIR}/apply-status-${short}.txt"
+                git diff --name-only > "${LOGDIR}/applied-files-${short}.txt" || true
               else
-                echo "apply-failed" > "${LOGDIR}/apply-status.txt"
-                git apply --reject --whitespace=fix "$PATCH" 2> "${LOGDIR}/apply-stderr.txt" || true
+                echo "apply-failed" > "${LOGDIR}/apply-status-${short}.txt"
+                git apply --reject --whitespace=fix "$PATCH" 2> "${LOGDIR}/apply-stderr-${short}.txt" || true
+                # collect .rej files
                 find . -name '*.rej' -print -exec cp --parents {} "${LOGDIR}/" \; || true
               fi
               cp -v "$PATCH" "${LOGDIR}/" 2>/dev/null || true
@@ -116,24 +120,26 @@ jobs:
             cp build_6.1.sh "${workdir}/build_6.1.sh"
             chmod +x "${workdir}/build_6.1.sh"
 
-            # If EXTRA_CONFIG exists in the repo, copy it into the workdir and inject into the build script
+            # inject repo-local EXTRA_CONFIG into the script if present
             if [ -f "${GITHUB_WORKSPACE}/${EXTRA_CONFIG}" ]; then
               cp "${GITHUB_WORKSPACE}/${EXTRA_CONFIG}" "${workdir}/extra-frag.config"
-              # Update the script to reference the local fragment
               sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
-              echo "injected EXTRA_CONFIGS=(\"extra-frag.config\")" > "${LOGDIR}/extra_config_injected.txt"
+              echo "injected EXTRA_CONFIGS=(\"extra-frag.config\")" > "${LOGDIR}/extra_config_injected-${short}.txt"
             else
-              echo "extra_config_not_found:${EXTRA_CONFIG}" > "${LOGDIR}/extra_config_injected.txt"
+              echo "extra_config_not_found:${EXTRA_CONFIG}" > "${LOGDIR}/extra_config_injected-${short}.txt"
             fi
 
-            # run the official build script inside workdir; capture logs
+            # run the official build script inside workdir; capture logs with short name
             pushd "${workdir}" >/dev/null || exit 1
-            echo "Starting build for pattern ${label} -> ${short}" > "${LOGDIR}/build-run.txt"
-            if ./build_6.1.sh 2>&1 | tee "${LOGDIR}/build-output.log"; then
-              echo "build-succeeded" > "${LOGDIR}/build-status.txt"
+            echo "Starting build for pattern ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
+            if ./build_6.1.sh 2>&1 | tee "${LOGDIR}/build-output-${short}.log"; then
+              echo "build-succeeded" > "${LOGDIR}/build-status-${short}.txt"
             else
-              echo "build-failed" > "${LOGDIR}/build-status.txt"
+              echo "build-failed" > "${LOGDIR}/build-status-${short}.txt"
             fi
+
+            # debug: list the top-level of workdir into the log dir
+            ls -la > "${LOGDIR}/workdir-listing-${short}.txt" || true
 
             # collect Image (multiple possible locations) into kernel/dist/<short>/Image
             if [ -f out/arch/arm64/boot/Image ]; then
@@ -151,9 +157,16 @@ jobs:
             find out -name .config -type f -exec cp -v {} "${LOGDIR}/final.config" \; 2>/dev/null || true
             popd >/dev/null
 
-            # package logs for this label
-            tar -czf "/tmp/patch-results/${short}-logs.tar.gz" -C "/tmp/patch-results/${label}" . || true
+            # package logs for this label (tarball named with short)
+            tar -czf "/tmp/patch-results/${short}-logs.tar.gz" -C "/tmp/patch-results/${short}" . || true
           done
+
+      - name: Upload patch_base listing
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-base-list
+          path: /tmp/patch-results/patch_base_list.txt
+          if-no-files-found: warn
 
       - name: Upload per-road logs (678)
         uses: actions/upload-artifact@v4
