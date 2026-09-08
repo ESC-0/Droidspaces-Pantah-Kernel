@@ -117,11 +117,7 @@ jobs:
             echo "copied fragment" > "${LOGDIR}/extra_config_injected-${short}.txt"
           else
             mkdir -p "${workdir}/arch/arm64/configs"
-            cat > "${workdir}/arch/arm64/configs/extra-frag.config" <<'EOF'
-            mkdir -p "${workdir}/arch/arm64/configs"
             printf '%s\n' '# auto-generated fallback fragment' 'CONFIG_SHRINKER_RWSEM=y' > "${workdir}/arch/arm64/configs/extra-frag.config"
-            sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
-            echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
             sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
             echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
           fi
@@ -216,11 +212,7 @@ jobs:
             echo "copied fragment" > "${LOGDIR}/extra_config_injected-${short}.txt"
           else
             mkdir -p "${workdir}/arch/arm64/configs"
-            cat > "${workdir}/arch/arm64/configs/extra-frag.config" <<'EOF'
-            mkdir -p "${workdir}/arch/arm64/configs"
             printf '%s\n' '# auto-generated fallback fragment' 'CONFIG_SHRINKER_RWSEM=y' > "${workdir}/arch/arm64/configs/extra-frag.config"
-            sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
-            echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
             sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
             echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
           fi
@@ -290,12 +282,12 @@ jobs:
             pushd "${workdir}" >/dev/null
             if git apply --reverse --check "$PATCH" 2>/dev/null; then
               echo "already-applied" > "${LOGDIR}/apply-status-${short}.txt"
-            elif git apply --check "$PATCH" 2>/dev/null && git apply "$PATCH"; then
+          elif git apply --check "$PATCH" 2>/dev/null && git apply "$PATCH"; then
               echo "applied-clean" > "${LOGDIR}/apply-status-${short}.txt"
             else
-            echo "apply-failed" > "${LOGDIR}/apply-status-${short}.txt"
-            git apply --reject --whitespace=fix "$PATCH" 2> "${LOGDIR}/apply-stderr-${short}.txt" || true
-            find . -name '*.rej' -print -exec cp --parents {} "${LOGDIR}/" \; || true
+              echo "apply-failed" > "${LOGDIR}/apply-status-${short}.txt"
+              git apply --reject --whitespace=fix "$PATCH" 2> "${LOGDIR}/apply-stderr-${short}.txt" || true
+              find . -name '*.rej' -print -exec cp --parents {} "${LOGDIR}/" \; || true
             fi
             cp -v "$PATCH" "${LOGDIR}/" 2>/dev/null || true
             popd >/dev/null
@@ -314,11 +306,7 @@ jobs:
             echo "copied fragment" > "${LOGDIR}/extra_config_injected-${short}.txt"
           else
             mkdir -p "${workdir}/arch/arm64/configs"
-            cat > "${workdir}/arch/arm64/configs/extra-frag.config" <<'EOF'
-            mkdir -p "${workdir}/arch/arm64/configs"
             printf '%s\n' '# auto-generated fallback fragment' 'CONFIG_SHRINKER_RWSEM=y' > "${workdir}/arch/arm64/configs/extra-frag.config"
-            sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
-            echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
             sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
             echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
           fi
