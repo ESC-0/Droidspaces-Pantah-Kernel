@@ -8,9 +8,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      # where the patches live inside the droidspaces repo we will clone
       PATCH_BASE: "$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12"
-      # fixed config fragment path inside this repository (must exist on the branch you run)
       EXTRA_CONFIG_PATH: "kernel/droidspaces-fragment.config"
       KERNEL_MANIFEST_BRANCH: "android-gs-pantah-6.1-android16"
 
@@ -20,14 +18,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install build dependencies (DEB list from build_6.1.sh)
+      - name: Install build dependencies (DEB list)
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y build-essential bc bison flex pkg-config \
             git curl tar xz-utils zip unzip cpio rsync kmod perl python3 python-is-python3 \
             libssl-dev libelf-dev pahole libncurses-dev zlib1g-dev libyaml-dev \
-            lz4 zstd device-tree-compiler wget curl openjdk-11-jdk
+            lz4 zstd device-tree-compiler wget openjdk-11-jdk
 
       - name: Install repo tool
         run: |
@@ -64,12 +62,10 @@ jobs:
           set -euo pipefail
           rm -rf aosp-base || true
           cp -a aosp aosp-base
-          # download upstream official script (exact commit used by guide)
           curl -fsSL -o build_6.1.sh \
             https://raw.githubusercontent.com/ravindu644/Android-Kernel-Tutorials/f0e815e5ee1197e7d25142c74060dfa4e10d38da/build_scripts/build_6.1.sh
           chmod +x build_6.1.sh
 
-      # Pattern 6_7_8 -> short 678
       - name: Pattern 678 — apply patch & run build_6.1.sh
         working-directory: kernel
         continue-on-error: true
@@ -103,9 +99,14 @@ jobs:
             popd >/dev/null
           fi
 
-          # prepare build script and inject fragment if present
+          # prepare build script, inject fragment, and disable install_deps inside it
           cp build_6.1.sh "${workdir}/build_6.1.sh"
           chmod +x "${workdir}/build_6.1.sh"
+          # disable automatic install_deps (dnf) when running in CI
+          sed -i 's/^[[:space:]]*install_deps[[:space:]]*$/# install_deps disabled in CI: packages preinstalled/' "${workdir}/build_6.1.sh" || true
+          # save head of modified script to logs for verification
+          sed -n '1,140p' "${workdir}/build_6.1.sh" > "${LOGDIR}/build_6.1-modified-head-${short}.txt" || true
+
           if [ -f "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" ]; then
             cp "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" "${workdir}/extra-frag.config"
             sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
@@ -122,10 +123,8 @@ jobs:
           else
             echo "build-failed" > "${LOGDIR}/build-status-${short}.txt"
           fi
-          # list workdir for debugging
           ls -la > "${LOGDIR}/workdir-listing-${short}.txt" || true
 
-          # copy produced Image if present
           if [ -f out/arch/arm64/boot/Image ]; then
             mkdir -p ../../kernel/dist/${short}
             cp out/arch/arm64/boot/Image ../../kernel/dist/${short}/Image || true
@@ -137,28 +136,26 @@ jobs:
             cp build/Image ../../kernel/dist/${short}/Image || true
           fi
 
-          # copy .config if present
           find out -name .config -type f -exec cp -v {} "${LOGDIR}/final.config" \; 2>/dev/null || true
           popd >/dev/null
 
       - name: Upload logs — 678
-        uses: actions/upload-artifact@v4
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: per-road-logs-678
           path: /tmp/patch-results/678
           if-no-files-found: warn
 
       - name: Upload image — 678
-        uses: actions/upload-artifact@v4
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: pixel7-pantah-kernel-678
           path: kernel/dist/678
           if-no-files-found: warn
           retention-days: 7
 
-      # Pattern 3_4_5 -> short 345
       - name: Pattern 345 — apply patch & run build_6.1.sh
         working-directory: kernel
         continue-on-error: true
@@ -194,6 +191,9 @@ jobs:
 
           cp build_6.1.sh "${workdir}/build_6.1.sh"
           chmod +x "${workdir}/build_6.1.sh"
+          sed -i 's/^[[:space:]]*install_deps[[:space:]]*$/# install_deps disabled in CI: packages preinstalled/' "${workdir}/build_6.1.sh" || true
+          sed -n '1,140p' "${workdir}/build_6.1.sh" > "${LOGDIR}/build_6.1-modified-head-${short}.txt" || true
+
           if [ -f "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" ]; then
             cp "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" "${workdir}/extra-frag.config"
             sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
@@ -221,27 +221,27 @@ jobs:
             mkdir -p ../../kernel/dist/${short}
             cp build/Image ../../kernel/dist/${short}/Image || true
           fi
+
           find out -name .config -type f -exec cp -v {} "${LOGDIR}/final.config" \; 2>/dev/null || true
           popd >/dev/null
 
       - name: Upload logs — 345
-        uses: actions/upload-artifact@v4
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: per-road-logs-345
           path: /tmp/patch-results/345
           if-no-files-found: warn
 
       - name: Upload image — 345
-        uses: actions/upload-artifact@v4
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: pixel7-pantah-kernel-345
           path: kernel/dist/345
           if-no-files-found: warn
           retention-days: 7
 
-      # Pattern 1_2_3 -> short 123
       - name: Pattern 123 — apply patch & run build_6.1.sh
         working-directory: kernel
         continue-on-error: true
@@ -277,6 +277,9 @@ jobs:
 
           cp build_6.1.sh "${workdir}/build_6.1.sh"
           chmod +x "${workdir}/build_6.1.sh"
+          sed -i 's/^[[:space:]]*install_deps[[:space:]]*$/# install_deps disabled in CI: packages preinstalled/' "${workdir}/build_6.1.sh" || true
+          sed -n '1,140p' "${workdir}/build_6.1.sh" > "${LOGDIR}/build_6.1-modified-head-${short}.txt" || true
+
           if [ -f "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" ]; then
             cp "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" "${workdir}/extra-frag.config"
             sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
@@ -304,20 +307,21 @@ jobs:
             mkdir -p ../../kernel/dist/${short}
             cp build/Image ../../kernel/dist/${short}/Image || true
           fi
+
           find out -name .config -type f -exec cp -v {} "${LOGDIR}/final.config" \; 2>/dev/null || true
           popd >/dev/null
 
       - name: Upload logs — 123
-        uses: actions/upload-artifact@v4
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: per-road-logs-123
           path: /tmp/patch-results/123
           if-no-files-found: warn
 
       - name: Upload image — 123
-        uses: actions/upload-artifact@v4
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: pixel7-pantah-kernel-123
           path: kernel/dist/123
