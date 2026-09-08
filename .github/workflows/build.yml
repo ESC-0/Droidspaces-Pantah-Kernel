@@ -2,11 +2,6 @@ name: Build Pixel 7 kernel with Droidspaces support
 
 on:
   workflow_dispatch:
-    inputs:
-      run_groups:
-        description: 'Run grouped config builds to find bootloop-causing options'
-        required: false
-        default: 'false'
 
 jobs:
   build:
@@ -55,223 +50,135 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/patch-results
           nl -ba aosp/include/linux/sched.h | sed -n '1,2200p' > /tmp/patch-results/sched-full.txt || true
-          rsync -a --delete aosp/ aosp-base/
+          # make a base copy (preserves .git)
+          rm -rf aosp-base || true
+          cp -a aosp aosp-base
 
-      - name: Try patch 6_7_8 (sequential)
+      - name: Loop patches -> apply, config, build, collect Image
         working-directory: kernel
         run: |
           set -euo pipefail
           set -x
-          LABEL=6_7_8
-          PATCH="$PATCH_BASE/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch"
-          mkdir -p /tmp/patch-results
-          rm -rf aosp-patch-${LABEL} || true
-          rsync -a aosp-base/ aosp-patch-${LABEL}/
-          if [ ! -f "$PATCH" ]; then
-            echo "missing patch" > /tmp/patch-results/patch-${LABEL}-status.txt
-          else
-            pushd aosp-patch-${LABEL} >/dev/null
-            if git apply --reverse --check "$PATCH" 2>/dev/null; then
-              echo "already-applied" > /tmp/patch-results/patch-${LABEL}-status.txt
-              git diff --name-only > /tmp/patch-results/patch-${LABEL}-applied-diff.txt || true
-            elif git apply --check "$PATCH" 2>/dev/null && git apply "$PATCH"; then
-              echo "applied-clean" > /tmp/patch-results/patch-${LABEL}-status.txt
-              git diff --name-only > /tmp/patch-results/patch-${LABEL}-applied-diff.txt || true
+          labels=( "6_7_8" "3_4_5" "1_2_3" )
+          for label in "${labels[@]}"; do
+            PATCH="${PATCH_BASE}/001.GKI-below-6.12-fix_sysvipc_kabi_${label}.patch"
+            workdir="aosp-patch-${label}"
+            rm -rf "${workdir}" || true
+            cp -a aosp-base "${workdir}"
+            # prepare a per-patch log
+            LOGDIR="/tmp/patch-results/${label}"
+            rm -rf "${LOGDIR}" || true
+            mkdir -p "${LOGDIR}"
+
+            # try to apply patch inside the git repo copy
+            if [ ! -f "$PATCH" ]; then
+              echo "missing-patch" > "${LOGDIR}/status.txt"
             else
-              echo "apply-failed" > /tmp/patch-results/patch-${LABEL}-status.txt
-              git apply --reject --whitespace=fix "$PATCH" 2> /tmp/patch-results/patch-${LABEL}-stderr.txt || true
-              find . -name '*.rej' -print -exec cp --parents {} /tmp/patch-results/ \; || true
-            fi
-            cp "$PATCH" /tmp/patch-results/ 2>/dev/null || true
-            popd >/dev/null
-          fi
-          tar -czf /tmp/patch-results/patch-${LABEL}.tar.gz -C /tmp/patch-results \
-            patch-${LABEL}-status.txt patch-${LABEL}-applied-diff.txt patch-${LABEL}-stderr.txt sched-full.txt $(basename "$PATCH") $(find /tmp/patch-results -maxdepth 1 -name '*.rej' -print || true) || true
-
-      - name: Upload patch-6_7_8
-        uses: actions/upload-artifact@v4
-        with:
-          name: patch-6_7_8
-          path: /tmp/patch-results/patch-6_7_8.tar.gz
-
-      - name: Try patch 3_4_5 (sequential)
-        working-directory: kernel
-        run: |
-          set -euo pipefail
-          set -x
-          LABEL=3_4_5
-          PATCH="$PATCH_BASE/001.GKI-below-6.12-fix_sysvipc_kabi_3_4_5.patch"
-          mkdir -p /tmp/patch-results
-          rm -rf aosp-patch-${LABEL} || true
-          rsync -a aosp-base/ aosp-patch-${LABEL}/
-          if [ ! -f "$PATCH" ]; then
-            echo "missing patch" > /tmp/patch-results/patch-${LABEL}-status.txt
-          else
-            pushd aosp-patch-${LABEL} >/dev/null
-            if git apply --reverse --check "$PATCH" 2>/dev/null; then
-              echo "already-applied" > /tmp/patch-results/patch-${LABEL}-status.txt
-              git diff --name-only > /tmp/patch-results/patch-${LABEL}-applied-diff.txt || true
-            elif git apply --check "$PATCH" 2>/dev/null && git apply "$PATCH"; then
-              echo "applied-clean" > /tmp/patch-results/patch-${LABEL}-status.txt
-              git diff --name-only > /tmp/patch-results/patch-${LABEL}-applied-diff.txt || true
-            else
-              echo "apply-failed" > /tmp/patch-results/patch-${LABEL}-status.txt
-              git apply --reject --whitespace=fix "$PATCH" 2> /tmp/patch-results/patch-${LABEL}-stderr.txt || true
-              find . -name '*.rej' -print -exec cp --parents {} /tmp/patch-results/ \; || true
-            fi
-            cp "$PATCH" /tmp/patch-results/ 2>/dev/null || true
-            popd >/dev/null
-          fi
-          tar -czf /tmp/patch-results/patch-${LABEL}.tar.gz -C /tmp/patch-results \
-            patch-${LABEL}-status.txt patch-${LABEL}-applied-diff.txt patch-${LABEL}-stderr.txt sched-full.txt $(basename "$PATCH") $(find /tmp/patch-results -maxdepth 1 -name '*.rej' -print || true) || true
-
-      - name: Upload patch-3_4_5
-        uses: actions/upload-artifact@v4
-        with:
-          name: patch-3_4_5
-          path: /tmp/patch-results/patch-3_4_5.tar.gz
-
-      - name: Try patch 1_2_3 (sequential)
-        working-directory: kernel
-        run: |
-          set -euo pipefail
-          set -x
-          LABEL=1_2_3
-          PATCH="$PATCH_BASE/001.GKI-below-6.12-fix_sysvipc_kabi_1_2_3.patch"
-          mkdir -p /tmp/patch-results
-          rm -rf aosp-patch-${LABEL} || true
-          rsync -a aosp-base/ aosp-patch-${LABEL}/
-          if [ ! -f "$PATCH" ]; then
-            echo "missing patch" > /tmp/patch-results/patch-${LABEL}-status.txt
-          else
-            pushd aosp-patch-${LABEL} >/dev/null
-            if git apply --reverse --check "$PATCH" 2>/dev/null; then
-              echo "already-applied" > /tmp/patch-results/patch-${LABEL}-status.txt
-              git diff --name-only > /tmp/patch-results/patch-${LABEL}-applied-diff.txt || true
-            elif git apply --check "$PATCH" 2>/dev/null && git apply "$PATCH"; then
-              echo "applied-clean" > /tmp/patch-results/patch-${LABEL}-status.txt
-              git diff --name-only > /tmp/patch-results/patch-${LABEL}-applied-diff.txt || true
-            else
-              echo "apply-failed" > /tmp/patch-results/patch-${LABEL}-status.txt
-              git apply --reject --whitespace=fix "$PATCH" 2> /tmp/patch-results/patch-${LABEL}-stderr.txt || true
-              find . -name '*.rej' -print -exec cp --parents {} /tmp/patch-results/ \; || true
-            fi
-            cp "$PATCH" /tmp/patch-results/ 2>/dev/null || true
-            popd >/dev/null
-          fi
-          tar -czf /tmp/patch-results/patch-${LABEL}.tar.gz -C /tmp/patch-results \
-            patch-${LABEL}-status.txt patch-${LABEL}-applied-diff.txt patch-${LABEL}-stderr.txt sched-full.txt $(basename "$PATCH") $(find /tmp/patch-results -maxdepth 1 -name '*.rej' -print || true) || true
-
-      - name: Upload patch-1_2_3
-        uses: actions/upload-artifact@v4
-        with:
-          name: patch-1_2_3
-          path: /tmp/patch-results/patch-1_2_3.tar.gz
-
-      - name: Build combined tree from successful patches
-        working-directory: kernel
-        run: |
-          set -euo pipefail
-          set -x
-          mkdir -p /tmp/patch-results/combined
-          rsync -a aosp-base/ /tmp/patch-results/combined/
-          pushd /tmp/patch-results/combined >/dev/null
-          APPLIED_LIST=""
-          for label in 6_7_8 3_4_5 1_2_3; do
-            if [ -f /tmp/patch-results/patch-${label}-status.txt ]; then
-              status="$(cut -d= -f2 /tmp/patch-results/patch-${label}-status.txt || true)"
-              # support plain tokens too
-              status="${status:-$(cat /tmp/patch-results/patch-${label}-status.txt)}"
-              patchfile="${PATCH_BASE}/001.GKI-below-6.12-fix_sysvipc_kabi_${label}.patch"
-              if [ "$status" = "applied-clean" ] || [ "$status" = "already-applied" ]; then
-                if [ -f "$patchfile" ]; then
-                  if git apply --check "$patchfile" 2>/dev/null && git apply "$patchfile"; then
-                    APPLIED_LIST="$APPLIED_LIST $label"
-                    git diff --name-only > /tmp/patch-results/combined-applied-${label}.txt || true
-                  else
-                    git apply --reject --whitespace=fix "$patchfile" 2> /tmp/patch-results/combined-${label}-stderr.txt || true
-                  fi
-                fi
+              pushd "${workdir}" >/dev/null
+              # reverse-check
+              if git apply --reverse --check "$PATCH" 2>/dev/null; then
+                echo "already-applied" > "${LOGDIR}/status.txt"
+                git diff --name-only > "${LOGDIR}/applied-diff.txt" || true
+              elif git apply --check "$PATCH" 2>/dev/null && git apply "$PATCH"; then
+                echo "applied-clean" > "${LOGDIR}/status.txt"
+                git diff --name-only > "${LOGDIR}/applied-diff.txt" || true
+              else
+                echo "apply-failed" > "${LOGDIR}/status.txt"
+                git apply --reject --whitespace=fix "$PATCH" 2> "${LOGDIR}/apply-stderr.txt" || true
+                # collect .rej files
+                find . -name '*.rej' -print -exec cp --parents {} "${LOGDIR}/" \; || true
               fi
+              # copy the patch stderr/status for debugging (no patch upload)
+              cp -v "$PATCH" "${LOGDIR}/" 2>/dev/null || true
+              popd >/dev/null
             fi
+
+            # apply droidspaces config to this workdir's defconfig
+            CFG="${workdir}/arch/arm64/configs/gki_defconfig"
+            cp "$CFG" "${CFG}.before-droidspaces" || true
+            cat > "${workdir}/droidspaces.config" <<'EOF'
+            CONFIG_SYSVIPC=y
+            CONFIG_POSIX_MQUEUE=y
+            CONFIG_NAMESPACES=y
+            CONFIG_IPC_NS=y
+            CONFIG_PID_NS=y
+            CONFIG_DEVTMPFS=y
+            CONFIG_DEVTMPFS_MOUNT=y
+            CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
+            CONFIG_USER_NS=y
+            CONFIG_NETFILTER_XT_TARGET_REJECT=y
+            CONFIG_NETFILTER_XT_TARGET_LOG=y
+            CONFIG_NETFILTER_XT_MATCH_RECENT=y
+            CONFIG_IP_SET=y
+            CONFIG_IP_SET_HASH_IP=y
+            CONFIG_IP_SET_HASH_NET=y
+            CONFIG_NETFILTER_XT_SET=y
+            CONFIG_TMPFS_POSIX_ACL=y
+            CONFIG_TMPFS_XATTR=y
+            EOF
+            while IFS= read -r setting; do
+              option="${setting%%=*}"
+              # remove existing lines
+              sed -i -e "/^${option}=.*$/d" -e "/^# ${option} is not set$/d" "$CFG" || true
+              printf '%s\n' "${setting}" >> "$CFG"
+            done < "${workdir}/droidspaces.config"
+
+            # swap in this workdir for building by replacing aosp with a symlink
+            # back up real aosp first
+            mv aosp aosp.orig || true
+            ln -s "${workdir}" aosp
+
+            # clean bazel outputs and build
+            rm -rf out bazel-bin bazel-out bazel-testlogs dist || true
+            mkdir -p dist
+            tools/bazel build --config=local --spawn_strategy=local --strategy=KernelBuild=local --disk_cache= --repository_cache= //common:kernel_aarch64 || true
+            tools/bazel build --config=local --spawn_strategy=local --strategy=KernelBuild=local --disk_cache= --repository_cache= //common:kernel_aarch64_images || true
+
+            # collect Image if present
+            IMAGE="$(find bazel-bin out -type f -name Image -print -quit || true)"
+            if [ -n "$IMAGE" ]; then
+              mkdir -p kernel/dist/${label}
+              cp "$IMAGE" kernel/dist/${label}/Image || true
+            else
+              echo "no-image-built" > "${LOGDIR}/build-status.txt"
+            fi
+
+            # restore original aosp
+            rm aosp || true
+            mv aosp.orig aosp || true
+
+            # package per-patch logs (only logs, not patches)
+            tar -czf "/tmp/patch-results/${label}.log.tar.gz" -C "/tmp/patch-results/${label}" . || true
+            # also save overall sched snippet for reference
+            cp /tmp/patch-results/sched-full.txt /tmp/patch-results/${label}_sched.txt || true
           done
-          echo "applied: $APPLIED_LIST" > /tmp/patch-results/combined-applied-list.txt
-          git add -A || true
-          git diff --staged > /tmp/patch-results/combined-diff.patch || true
-          popd >/dev/null
-          tar -czf /tmp/patch-results/combined-patches.tar.gz -C /tmp/patch-results combined-applied-list.txt combined-diff.patch combined-* || true
 
-      - name: Upload combined-patches
+      - name: Upload per-patch logs (if any)
         uses: actions/upload-artifact@v4
         with:
-          name: combined-patches
-          path: /tmp/patch-results/combined-patches.tar.gz
+          name: per-patch-logs
+          path: /tmp/patch-results/*.log.tar.gz,/tmp/patch-results/*_sched.txt
 
-      - name: Upload patch-debug (all)
+      - name: Upload Image for 6_7_8
         uses: actions/upload-artifact@v4
         with:
-          name: patch-debug
-          path: /tmp/patch-results/*.tar.gz,/tmp/patch-results/sched-full.txt
+          name: pixel7-pantah-droidspaces-kernel-6_7_8
+          path: kernel/dist/6_7_8/
+          if-no-files-found: warn
+          retention-days: 7
 
-      - name: Apply minimal Droidspaces configuration
-        working-directory: kernel/aosp
-        run: |
-          set -euo pipefail
-          CONFIG="arch/arm64/configs/gki_defconfig"
-          cp "$CONFIG" "$CONFIG.before-droidspaces"
-          cat > droidspaces.config <<'EOF'
-          CONFIG_SYSVIPC=y
-          CONFIG_POSIX_MQUEUE=y
-          CONFIG_NAMESPACES=y
-          CONFIG_IPC_NS=y
-          CONFIG_PID_NS=y
-          CONFIG_DEVTMPFS=y
-          CONFIG_DEVTMPFS_MOUNT=y
-          CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
-          CONFIG_USER_NS=y
-          CONFIG_NETFILTER_XT_TARGET_REJECT=y
-          CONFIG_NETFILTER_XT_TARGET_LOG=y
-          CONFIG_NETFILTER_XT_MATCH_RECENT=y
-          CONFIG_IP_SET=y
-          CONFIG_IP_SET_HASH_IP=y
-          CONFIG_IP_SET_HASH_NET=y
-          CONFIG_NETFILTER_XT_SET=y
-          CONFIG_TMPFS_POSIX_ACL=y
-          CONFIG_TMPFS_XATTR=y
-          EOF
-          while IFS= read -r setting; do
-            option="${setting%%=*}"
-            sed -i -e "/^${option}=.*$/d" -e "/^# ${option} is not set$/d" "$CONFIG"
-            printf '%s\n' "${setting}" >> "$CONFIG"
-          done < droidspaces.config
-          git diff --check
-
-      - name: Build kernel
-        working-directory: kernel
-        run: |
-          set -euo pipefail
-          rm -rf out bazel-bin bazel-out bazel-testlogs dist
-          mkdir -p dist
-          tools/bazel build --config=local --spawn_strategy=local --strategy=KernelBuild=local --disk_cache= --repository_cache= //common:kernel_aarch64
-          tools/bazel build --config=local --spawn_strategy=local --strategy=KernelBuild=local --disk_cache= --repository_cache= //common:kernel_aarch64_images
-
-      - name: Collect uncompressed Image
-        working-directory: kernel
-        run: |
-          set -euo pipefail
-          IMAGE="$(find bazel-bin out -type f -name Image -print -quit)"
-          test -n "$IMAGE"
-          cp "$IMAGE" dist/Image
-          CONFIG="$(find out -name .config -type f -print -quit || true)"
-          if [ -n "$CONFIG" ]; then cp "$CONFIG" dist/final.config; fi
-          cp aosp/arch/arm64/configs/gki_defconfig dist/gki_defconfig
-          sha256sum dist/Image
-          stat -c '%n %s bytes' dist/Image
-
-      - name: Upload kernel
+      - name: Upload Image for 3_4_5
         uses: actions/upload-artifact@v4
         with:
-          name: pixel7-pantah-droidspaces-kernel
-          path: kernel/dist/
-          if-no-files-found: error
+          name: pixel7-pantah-droidspaces-kernel-3_4_5
+          path: kernel/dist/3_4_5/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Image for 1_2_3
+        uses: actions/upload-artifact@v4
+        with:
+          name: pixel7-pantah-droidspaces-kernel-1_2_3
+          path: kernel/dist/1_2_3/
+          if-no-files-found: warn
           retention-days: 7
