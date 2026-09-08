@@ -6,7 +6,7 @@ on:
 env:
   PATCH_BASE: "$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12"
   EXTRA_CONFIG_PATH: "kernel/droidspaces-fragment.config"
-  KERNEL_FORK_REPO: "https://github.com/ESC-0/sultan-17.git"
+  KERNEL_FORK_REPO: "https://github.com/ESC-0/SULTAN17.git"
   KERNEL_FORK_BRANCH: "sultan-17"
 
 jobs:
