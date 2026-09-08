@@ -243,6 +243,8 @@ jobs:
         run: |
           set -euo pipefail
 
+          mkdir -p dist
+
           find bazel-bin out \
             -type f \
             \( \
@@ -258,16 +260,17 @@ jobs:
             \) \
             -exec cp -v {} dist/ \; || true
 
-          CONFIG="$(find out -name .config -type f -print -quit)"
-          test -n "$CONFIG"
+          if [ -f aosp/arch/arm64/configs/gki_defconfig ]; then
+            cp aosp/arch/arm64/configs/gki_defconfig \
+              dist/gki_defconfig
+          fi
 
-          cp "$CONFIG" dist/final.config
-          cp aosp/arch/arm64/configs/gki_defconfig \
-            dist/gki_defconfig
-
-          grep -E \
-            '^(CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE|CONFIG_NAMESPACES|CONFIG_IPC_NS|CONFIG_PID_NS|CONFIG_NET_NS|CONFIG_CGROUPS|CONFIG_USER_NS|CONFIG_SECCOMP|CONFIG_DEVTMPFS|CONFIG_DEVTMPFS_MOUNT|CONFIG_OVERLAY_FS)=' \
-            "$CONFIG" | sort
+          find out -name .config -type f -print -quit | while read -r CONFIG; do
+            cp "$CONFIG" dist/final.config
+            grep -E \
+              '^(CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE|CONFIG_NAMESPACES|CONFIG_IPC_NS|CONFIG_PID_NS|CONFIG_NET_NS|CONFIG_CGROUPS|CONFIG_USER_NS|CONFIG_SECCOMP|CONFIG_DEVTMPFS|CONFIG_DEVTMPFS_MOUNT|CONFIG_OVERLAY_FS)=' \
+              "$CONFIG" | sort || true
+          done
 
           test -n "$(find dist -type f \
             \( \
