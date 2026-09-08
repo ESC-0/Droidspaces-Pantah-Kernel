@@ -25,14 +25,15 @@ jobs:
           sudo apt-get install -y build-essential bc bison flex pkg-config \
             git curl tar xz-utils zip unzip cpio rsync kmod perl python3 python-is-python3 \
             libssl-dev libelf-dev pahole libncurses-dev zlib1g-dev libyaml-dev \
-            lz4 zstd device-tree-compiler wget openjdk-11-jdk
+            lz4 zstd device-tree-compiler wget openjdk-11-jdk lld
 
-      - name: Install repo helper
+      - name: Install repo helper and ensure $HOME/bin on PATH
         run: |
           set -euo pipefail
           mkdir -p "$HOME/bin"
           curl -Lf https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
           chmod +x "$HOME/bin/repo"
+          # ensure runner picks up $HOME/bin for later symlinks
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
       - name: Clone Droidspaces (patches)
@@ -68,9 +69,6 @@ jobs:
           rm -rf aosp-base || true
           cp -a aosp aosp-base
 
-      ####################################################################
-      # Pattern 678
-      ####################################################################
       - name: Pattern 678 - apply patch and build
         working-directory: kernel
         continue-on-error: true
@@ -115,38 +113,44 @@ jobs:
             echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
           fi
 
-          # fetch the clang toolchain used by the original script
+          # ensure clang toolchain present and ld.lld available
           CLANG_DIR="${HOME}/toolchains/clang-r510928"
           if [ ! -d "${CLANG_DIR}" ]; then
-            mkdir -p "${CLANG_DIR}"
+            mkdir -p "${HOME}/toolchains"
             curl -sL https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r510928.tar.gz | tar -xzf - -C "${HOME}/toolchains/"
           fi
           export PATH="${CLANG_DIR}/bin:${PATH}"
           export LD_LIBRARY_PATH="${CLANG_DIR}/lib:${CLANG_DIR}/lib64:${LD_LIBRARY_PATH:-}"
+          # ensure ld.lld exists on PATH (symlink into $HOME/bin if needed)
+          mkdir -p "${HOME}/bin"
+          if ! command -v ld.lld >/dev/null 2>&1; then
+            if [ -x "${CLANG_DIR}/bin/ld.lld" ]; then
+              ln -sf "${CLANG_DIR}/bin/ld.lld" "${HOME}/bin/ld.lld"
+            fi
+          fi
 
-          # Build using direct make commands (avoid build_6.1.sh heredoc/flow issues)
+          # Build using direct make commands (avoid build_6.1.sh flow issues)
           pushd "${workdir}" >/dev/null
           echo "Starting config and build for ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
 
           # Limit parallelism
           export MAKEFLAGS=-j2
 
-          # Write defconfig to out/.config while including extra-frag.config
-          # DEFCONFIG intentionally set to gki_defconfig (same as build_6.1.sh)
+          # Prepare build options
           DEFCONFIG=gki_defconfig
           BUILD_OPTS="ARCH=arm64 O=${PWD}/out LLVM=1 LLVM_IAS=1 HOSTCC=gcc HOSTCXX=g++"
 
-          # Run defconfig (with EXTRA_CONFIGS merged)
+          # Run defconfig merging the fragment
           make ${BUILD_OPTS} "${DEFCONFIG}" EXTRA_CONFIGS="extra-frag.config" 2>&1 | tee "${LOGDIR}/defconfig-output-${short}.log" || true
 
-          # Ensure the required option is enabled; if not, force it and olddefconfig
+          # Ensure the required option is enabled; if not, force it and run olddefconfig
           if ! grep -q '^CONFIG_SHRINKER_RWSEM=y' out/.config 2>/dev/null; then
             echo 'CONFIG_SHRINKER_RWSEM=y' >> out/.config || true
             make ${BUILD_OPTS} olddefconfig 2>&1 | tee -a "${LOGDIR}/defconfig-output-${short}.log" || true
             echo "forced CONFIG_SHRINKER_RWSEM=y" > "${LOGDIR}/forced-config-${short}.txt" || true
           fi
 
-          # Now build the kernel image
+          # Build Image
           make ${BUILD_OPTS} Image 2>&1 | tee "${LOGDIR}/build-output-${short}.log" || true
 
           # Capture tail for easier debugging
@@ -188,9 +192,6 @@ jobs:
           path: kernel/dist/678
           if-no-files-found: warn
 
-      ####################################################################
-      # Pattern 345 - same steps repeated
-      ####################################################################
       - name: Pattern 345 - apply patch and build
         working-directory: kernel
         continue-on-error: true
@@ -236,11 +237,17 @@ jobs:
 
           CLANG_DIR="${HOME}/toolchains/clang-r510928"
           if [ ! -d "${CLANG_DIR}" ]; then
-            mkdir -p "${CLANG_DIR}"
+            mkdir -p "${HOME}/toolchains"
             curl -sL https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r510928.tar.gz | tar -xzf - -C "${HOME}/toolchains/"
           fi
           export PATH="${CLANG_DIR}/bin:${PATH}"
           export LD_LIBRARY_PATH="${CLANG_DIR}/lib:${CLANG_DIR}/lib64:${LD_LIBRARY_PATH:-}"
+          mkdir -p "${HOME}/bin"
+          if ! command -v ld.lld >/dev/null 2>&1; then
+            if [ -x "${CLANG_DIR}/bin/ld.lld" ]; then
+              ln -sf "${CLANG_DIR}/bin/ld.lld" "${HOME}/bin/ld.lld"
+            fi
+          fi
 
           pushd "${workdir}" >/dev/null
           echo "Starting config and build for ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
@@ -292,9 +299,6 @@ jobs:
           path: kernel/dist/345
           if-no-files-found: warn
 
-      ####################################################################
-      # Pattern 123
-      ####################################################################
       - name: Pattern 123 - apply patch and build
         working-directory: kernel
         continue-on-error: true
@@ -340,11 +344,17 @@ jobs:
 
           CLANG_DIR="${HOME}/toolchains/clang-r510928"
           if [ ! -d "${CLANG_DIR}" ]; then
-            mkdir -p "${CLANG_DIR}"
+            mkdir -p "${HOME}/toolchains"
             curl -sL https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r510928.tar.gz | tar -xzf - -C "${HOME}/toolchains/"
           fi
           export PATH="${CLANG_DIR}/bin:${PATH}"
           export LD_LIBRARY_PATH="${CLANG_DIR}/lib:${CLANG_DIR}/lib64:${LD_LIBRARY_PATH:-}"
+          mkdir -p "${HOME}/bin"
+          if ! command -v ld.lld >/dev/null 2>&1; then
+            if [ -x "${CLANG_DIR}/bin/ld.lld" ]; then
+              ln -sf "${CLANG_DIR}/bin/ld.lld" "${HOME}/bin/ld.lld"
+            fi
+          fi
 
           pushd "${workdir}" >/dev/null
           echo "Starting config and build for ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
