@@ -1,35 +1,35 @@
-name: Build Pixel 7 kernel (3-pattern runs)
+name: Build Pixel 7 kernel (3-pattern runs, fixed fragment)
 
 on:
   workflow_dispatch:
-    inputs:
-      extra_config:
-        description: 'Path (in repo) to a config fragment to add to EXTRA_CONFIGS (optional)'
-        required: false
-        default: 'kernel/droidspaces-fragment.config'
 
 jobs:
   build-patterns:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
+      # PATCH_BASE points into the checked-out droidspaces repo (we clone it below)
       PATCH_BASE: "$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12"
+      # Always use this config fragment from the repo
+      EXTRA_CONFIG: "kernel/droidspaces-fragment.config"
       KERNEL_MANIFEST_BRANCH: "android-gs-pantah-6.1-android16"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install minimal packages
+      - name: Install build dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y git curl python3 python-is-python3 \
             build-essential bc bison flex patch pkg-config \
             tar xz-utils zip unzip cpio rsync kmod perl \
-            libssl-dev libelf-dev libncurses-dev \
-            zlib1g-dev lz4 zstd device-tree-compiler
+            libssl-dev libelf-dev pahole dwarves libncurses-dev \
+            zlib1g-dev libyaml-dev lz4 zstd device-tree-compiler \
+            openjdk-11-jdk wget gnupg
 
       - name: Install repo tool
         run: |
@@ -39,6 +39,16 @@ jobs:
           chmod +x "$HOME/bin/repo"
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
+      - name: Download Droidspaces (patches)
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/droidspaces" || true
+          git clone --depth=1 https://github.com/ravindu644/Droidspaces-OSS.git "$GITHUB_WORKSPACE/droidspaces"
+          # sanity check
+          if [ ! -d "$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI" ]; then
+            echo "WARNING: expected patch path not found under droidspaces repo"
+          fi
+
       - name: Download Pixel7 kernel (shallow)
         run: |
           set -euo pipefail
@@ -46,35 +56,34 @@ jobs:
           cd "$GITHUB_WORKSPACE/kernel"
           repo init -u https://android.googlesource.com/kernel/manifest -b "$KERNEL_MANIFEST_BRANCH" --depth=1
           repo sync -c --force-sync --no-tags -j2
-          test -d aosp || { echo "aosp tree missing"; exit 1; }
+          test -d aosp || (echo "aosp tree missing" && exit 1)
 
-      - name: Prepare base copy (preserve .git)
+      - name: Prepare base copy (preserve .git) and tmp dirs
         working-directory: kernel
         run: |
           set -euo pipefail
           rm -rf aosp-base || true
           cp -a aosp aosp-base
+          rm -rf /tmp/patch-results || true
           mkdir -p /tmp/patch-results
 
-      - name: Download official build_6.1.sh script
+      - name: Download build_6.1.sh
         working-directory: kernel
         run: |
           set -euo pipefail
-          # use the upstream raw script; will be tweaked per-run
           curl -fsSL -o build_6.1.sh \
             https://raw.githubusercontent.com/ravindu644/Android-Kernel-Tutorials/f0e815e5ee1197e7d25142c74060dfa4e10d38da/build_scripts/build_6.1.sh
           chmod +x build_6.1.sh
-          sed -n '1,120p' build_6.1.sh || true
 
       - name: Run three sequential patch+build roads (678,345,123)
         working-directory: kernel
         run: |
           set -euo pipefail
           set -x
-          EXTRA_CONFIG="${{ github.event.inputs.extra_config }}"
-          # map patterns -> short name
+          # mapping and labels
           declare -A MAP=( ["6_7_8"]="678" ["3_4_5"]="345" ["1_2_3"]="123" )
           labels=( "6_7_8" "3_4_5" "1_2_3" )
+
           for label in "${labels[@]}"; do
             short="${MAP[$label]}"
             LOGDIR="/tmp/patch-results/${label}"
@@ -85,7 +94,6 @@ jobs:
             cp -a aosp-base "${workdir}"
 
             PATCH="${PATCH_BASE}/001.GKI-below-6.12-fix_sysvipc_kabi_${label}.patch"
-            # record patch apply attempt
             if [ ! -f "$PATCH" ]; then
               echo "missing-patch: $PATCH" > "${LOGDIR}/apply-status.txt"
             else
@@ -98,41 +106,36 @@ jobs:
               else
                 echo "apply-failed" > "${LOGDIR}/apply-status.txt"
                 git apply --reject --whitespace=fix "$PATCH" 2> "${LOGDIR}/apply-stderr.txt" || true
-                # collect .rej files
                 find . -name '*.rej' -print -exec cp --parents {} "${LOGDIR}/" \; || true
               fi
               cp -v "$PATCH" "${LOGDIR}/" 2>/dev/null || true
               popd >/dev/null
             fi
 
-            # prepare build script copy in workdir
+            # copy the official build script into the workdir
             cp build_6.1.sh "${workdir}/build_6.1.sh"
             chmod +x "${workdir}/build_6.1.sh"
 
-            # if an extra config fragment was supplied, write it into the script's EXTRA_CONFIGS
-            if [ -n "$EXTRA_CONFIG" ]; then
-              # make the path relative to kernel root if user passed repo path; copy fragment into workdir
-              if [ -f "${GITHUB_WORKSPACE}/${EXTRA_CONFIG}" ]; then
-                cp "${GITHUB_WORKSPACE}/${EXTRA_CONFIG}" "${workdir}/extra-frag.config"
-                # replace EXTRA_CONFIGS=() with EXTRA_CONFIGS=("extra-frag.config")
-                sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh"
-                echo "injected EXTRA_CONFIGS=(\"extra-frag.config\")" > "${LOGDIR}/extra_config_injected.txt"
-              else
-                echo "extra_config_not_found:${EXTRA_CONFIG}" > "${LOGDIR}/extra_config_injected.txt"
-              fi
+            # If EXTRA_CONFIG exists in the repo, copy it into the workdir and inject into the build script
+            if [ -f "${GITHUB_WORKSPACE}/${EXTRA_CONFIG}" ]; then
+              cp "${GITHUB_WORKSPACE}/${EXTRA_CONFIG}" "${workdir}/extra-frag.config"
+              # Update the script to reference the local fragment
+              sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
+              echo "injected EXTRA_CONFIGS=(\"extra-frag.config\")" > "${LOGDIR}/extra_config_injected.txt"
+            else
+              echo "extra_config_not_found:${EXTRA_CONFIG}" > "${LOGDIR}/extra_config_injected.txt"
             fi
 
             # run the official build script inside workdir; capture logs
             pushd "${workdir}" >/dev/null || exit 1
             echo "Starting build for pattern ${label} -> ${short}" > "${LOGDIR}/build-run.txt"
-            # run and capture stdout/stderr
             if ./build_6.1.sh 2>&1 | tee "${LOGDIR}/build-output.log"; then
               echo "build-succeeded" > "${LOGDIR}/build-status.txt"
             else
               echo "build-failed" > "${LOGDIR}/build-status.txt"
             fi
-            # if the script produced build/Image or out/boot/Image, collect it
-            # prefer out/arch/arm64/boot/Image then arch/arm64/boot/Image
+
+            # collect Image (multiple possible locations) into kernel/dist/<short>/Image
             if [ -f out/arch/arm64/boot/Image ]; then
               mkdir -p ../../kernel/dist/${short}
               cp out/arch/arm64/boot/Image ../../kernel/dist/${short}/Image || true
@@ -143,7 +146,8 @@ jobs:
               mkdir -p ../../kernel/dist/${short}
               cp build/Image ../../kernel/dist/${short}/Image || true
             fi
-            # copy .config if present
+
+            # copy any final .config
             find out -name .config -type f -exec cp -v {} "${LOGDIR}/final.config" \; 2>/dev/null || true
             popd >/dev/null
 
@@ -151,33 +155,47 @@ jobs:
             tar -czf "/tmp/patch-results/${short}-logs.tar.gz" -C "/tmp/patch-results/${label}" . || true
           done
 
-      - name: Upload per-road logs (all)
+      - name: Upload per-road logs (678)
         uses: actions/upload-artifact@v4
         with:
-          name: per-road-logs
-          path: |
-            /tmp/patch-results/678-logs.tar.gz
-            /tmp/patch-results/345-logs.tar.gz
-            /tmp/patch-results/123-logs.tar.gz
+          name: per-road-logs-678
+          path: /tmp/patch-results/678-logs.tar.gz
           if-no-files-found: warn
 
-      - name: Upload Images (pattern 678)
+      - name: Upload per-road logs (345)
+        uses: actions/upload-artifact@v4
+        with:
+          name: per-road-logs-345
+          path: /tmp/patch-results/345-logs.tar.gz
+          if-no-files-found: warn
+
+      - name: Upload per-road logs (123)
+        uses: actions/upload-artifact@v4
+        with:
+          name: per-road-logs-123
+          path: /tmp/patch-results/123-logs.tar.gz
+          if-no-files-found: warn
+
+      - name: Upload Image (pattern 678)
         uses: actions/upload-artifact@v4
         with:
           name: pixel7-pantah-kernel-678
-          path: kernel/dist/678/Image
+          path: kernel/dist/678
           if-no-files-found: warn
+          retention-days: 7
 
-      - name: Upload Images (pattern 345)
+      - name: Upload Image (pattern 345)
         uses: actions/upload-artifact@v4
         with:
           name: pixel7-pantah-kernel-345
-          path: kernel/dist/345/Image
+          path: kernel/dist/345
           if-no-files-found: warn
+          retention-days: 7
 
-      - name: Upload Images (pattern 123)
+      - name: Upload Image (pattern 123)
         uses: actions/upload-artifact@v4
         with:
           name: pixel7-pantah-kernel-123
-          path: kernel/dist/123/Image
+          path: kernel/dist/123
           if-no-files-found: warn
+          retention-days: 7
