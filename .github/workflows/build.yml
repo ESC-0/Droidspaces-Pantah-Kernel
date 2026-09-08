@@ -1,9 +1,6 @@
 name: Build Pixel 7 kernel with Droidspaces support
 
 on:
-  workflow_dispatch:name: Build Pixel 7 kernel with Droidspaces support
-
-on:
   workflow_dispatch:
 
 jobs:
