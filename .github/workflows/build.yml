@@ -1,4 +1,4 @@
-name: Build Pixel 7 kernel (3-pattern sequential, official build_6.1.sh, fragment in configs)
+name: Build Pixel 7 kernel (3-pattern sequential, official build_6.1.sh, CI-safe)
 
 on:
   workflow_dispatch:
@@ -99,19 +99,20 @@ jobs:
             popd >/dev/null
           fi
 
-          # prepare build script, disable install_deps, and inject fragment into arch/arm64/configs
+          # prepare build script, disable install_deps, force MENUCONFIG=0, and inject fragment into arch/arm64/configs
           cp build_6.1.sh "${workdir}/build_6.1.sh"
           chmod +x "${workdir}/build_6.1.sh"
+          # disable package install
           sed -i 's/^[[:space:]]*install_deps[[:space:]]*$/# install_deps disabled in CI: packages preinstalled/' "${workdir}/build_6.1.sh" || true
+          # force MENUCONFIG=0 (non-interactive CI)
+          sed -i 's/^MENUCONFIG=.*/MENUCONFIG=0/' "${workdir}/build_6.1.sh" || true
           sed -n '1,140p' "${workdir}/build_6.1.sh" > "${LOGDIR}/build_6.1-modified-head-${short}.txt" || true
 
-          # copy the repo fragment into arch/arm64/configs so make sees it as a config target
           if [ -f "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" ]; then
             mkdir -p "${workdir}/arch/arm64/configs"
             cp "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" "${workdir}/arch/arm64/configs/extra-frag.config"
-            echo "copied fragment to arch/arm64/configs/extra-frag.config" > "${LOGDIR}/extra_config_injected-${short}.txt"
-            # ensure build script will call make with the fragment name
             sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
+            echo "copied fragment to arch/arm64/configs/extra-frag.config" > "${LOGDIR}/extra_config_injected-${short}.txt"
           else
             echo "extra_config_not_found:${EXTRA_CONFIG_PATH}" > "${LOGDIR}/extra_config_injected-${short}.txt"
           fi
@@ -194,6 +195,7 @@ jobs:
           cp build_6.1.sh "${workdir}/build_6.1.sh"
           chmod +x "${workdir}/build_6.1.sh"
           sed -i 's/^[[:space:]]*install_deps[[:space:]]*$/# install_deps disabled in CI: packages preinstalled/' "${workdir}/build_6.1.sh" || true
+          sed -i 's/^MENUCONFIG=.*/MENUCONFIG=0/' "${workdir}/build_6.1.sh" || true
           sed -n '1,140p' "${workdir}/build_6.1.sh" > "${LOGDIR}/build_6.1-modified-head-${short}.txt" || true
 
           if [ -f "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" ]; then
@@ -266,14 +268,14 @@ jobs:
             pushd "${workdir}" >/dev/null || exit 1
             if git apply --reverse --check "$PATCH" 2>/dev/null; then
               echo "already-applied" > "${LOGDIR}/apply-status-${short}.txt"
-            elif git apply --check "$PATCH" 2>/dev/null && git apply "$PATCH"; then
+          elif git apply --check "$PATCH" 2>/dev/null && git apply "$PATCH"; then
               echo "applied-clean" > "${LOGDIR}/apply-status-${short}.txt"
               git diff --name-only > "${LOGDIR}/applied-files-${short}.txt" || true
-            else
+          else
               echo "apply-failed" > "${LOGDIR}/apply-status-${short}.txt"
               git apply --reject --whitespace=fix "$PATCH" 2> "${LOGDIR}/apply-stderr-${short}.txt" || true
               find . -name '*.rej' -print -exec cp --parents {} "${LOGDIR}/" \; || true
-            fi
+          fi
             cp -v "$PATCH" "${LOGDIR}/" 2>/dev/null || true
             popd >/dev/null
           fi
@@ -281,6 +283,7 @@ jobs:
           cp build_6.1.sh "${workdir}/build_6.1.sh"
           chmod +x "${workdir}/build_6.1.sh"
           sed -i 's/^[[:space:]]*install_deps[[:space:]]*$/# install_deps disabled in CI: packages preinstalled/' "${workdir}/build_6.1.sh" || true
+          sed -i 's/^MENUCONFIG=.*/MENUCONFIG=0/' "${workdir}/build_6.1.sh" || true
           sed -n '1,140p' "${workdir}/build_6.1.sh" > "${LOGDIR}/build_6.1-modified-head-${short}.txt" || true
 
           if [ -f "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" ]; then
