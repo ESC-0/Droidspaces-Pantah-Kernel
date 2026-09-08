@@ -11,7 +11,7 @@ jobs:
       PATCH_BASE: "$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12"
 
     steps:
-      - name: Install dependencies (including JDK & Bazelisk)
+      - name: Install dependencies including JDK and Bazelisk
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -21,13 +21,12 @@ jobs:
             libssl-dev libelf-dev pahole libncurses-dev \
             zlib1g-dev libyaml-dev lz4 zstd device-tree-compiler adb fastboot \
             openjdk-11-jdk wget gnupg
-          # Install Bazelisk (as /usr/local/bin/bazel)
           curl -Lo /tmp/bazelisk-linux-amd64 https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
           sudo mv /tmp/bazelisk-linux-amd64 /usr/local/bin/bazel
           sudo chmod +x /usr/local/bin/bazel
           bazel --version || true
 
-      - name: Install repo
+      - name: Install repo tool
         run: |
           set -euo pipefail
           mkdir -p "$HOME/bin"
@@ -59,12 +58,11 @@ jobs:
           rm -rf aosp-base || true
           cp -a aosp aosp-base
 
-      - name: Loop patches -> apply, config, build, collect Image
+      - name: Apply patches sequentially, build, and collect Image per-label
         working-directory: kernel
         run: |
           set -euo pipefail
           set -x
-          # Choose bazel command: prefer repository wrapper tools/bazel, fallback to system bazel
           if [ -x "./tools/bazel" ]; then
             BAZEL_CMD="./tools/bazel"
           else
@@ -81,7 +79,6 @@ jobs:
             rm -rf "${LOGDIR}" || true
             mkdir -p "${LOGDIR}"
 
-            # attempt patch inside isolated copy
             if [ ! -f "$PATCH" ]; then
               echo "missing-patch" > "${LOGDIR}/status.txt"
             else
@@ -101,7 +98,6 @@ jobs:
               popd >/dev/null
             fi
 
-            # write droidspaces.config reliably (avoid heredoc indentation issues)
             CFG="${workdir}/arch/arm64/configs/gki_defconfig"
             cp "$CFG" "${CFG}.before-droidspaces" || true
             printf '%s\n' "CONFIG_SYSVIPC=y" > "${workdir}/droidspaces.config"
@@ -123,22 +119,18 @@ jobs:
             printf '%s\n' "CONFIG_TMPFS_POSIX_ACL=y" >> "${workdir}/droidspaces.config"
             printf '%s\n' "CONFIG_TMPFS_XATTR=y" >> "${workdir}/droidspaces.config"
 
-            # merge fragment into defconfig
             while IFS= read -r setting; do
               option="${setting%%=*}"
               sed -i -e "/^${option}=.*$/d" -e "/^# ${option} is not set$/d" "$CFG" || true
               printf '%s\n' "${setting}" >> "$CFG"
             done < "${workdir}/droidspaces.config"
 
-            # swap aosp to point to this workdir
             mv aosp aosp.orig || true
             ln -s "${workdir}" aosp
 
-            # build and capture logs
             rm -rf out bazel-bin bazel-out bazel-testlogs dist || true
             mkdir -p dist "${LOGDIR}"
 
-            # run kernel build and images build, capture output to per-label logs
             if ! $BAZEL_CMD build --config=local --spawn_strategy=local --strategy=KernelBuild=local --disk_cache= --repository_cache= //common:kernel_aarch64 2>&1 | tee "${LOGDIR}/bazel-kernel-${label}.log"; then
               echo "bazel-kernel-failed" > "${LOGDIR}/build-status.txt"
             fi
@@ -147,12 +139,10 @@ jobs:
               echo "bazel-images-failed" >> "${LOGDIR}/build-status.txt"
             fi
 
-            # save final .config if produced
             if CONFIG_FILE="$(find out -name .config -type f -print -quit 2>/dev/null || true)"; then
               cp -v "$CONFIG_FILE" "${LOGDIR}/final.config" || true
             fi
 
-            # collect Image if present
             IMAGE="$(find bazel-bin out -type f -name Image -print -quit || true)"
             if [ -n "$IMAGE" ]; then
               mkdir -p kernel/dist/${label}
@@ -161,34 +151,35 @@ jobs:
               echo "no-image-built" > "${LOGDIR}/build-status.txt"
             fi
 
-            # restore original aosp
             rm aosp || true
             mv aosp.orig aosp || true
 
-            # package per-patch logs
             tar -czf "/tmp/patch-results/${label}.log.tar.gz" -C "/tmp/patch-results/${label}" . || true
             cp /tmp/patch-results/sched-full.txt /tmp/patch-results/${label}_sched.txt || true
           done
 
-      - name: Debug: list build outputs and package bazel logs
+      - name: Debug list build outputs and package bazel logs
         working-directory: kernel
         run: |
           set -euo pipefail
-          echo "=== ROOT: $(pwd) ==="
-          echo "--- aosp listing ---"
+          echo "ROOT: $(pwd)"
+          echo "aosp listing:"
           ls -la aosp || true
-          echo "--- aosp-base listing ---"
+          echo "aosp-base listing:"
           ls -la aosp-base || true
-          echo "--- bazel-bin & out ---"
+          echo "bazel-bin & out du:"
           du -sh bazel-bin 2>/dev/null || true
           du -sh out 2>/dev/null || true
+          echo "bazel-bin listing:"
           ls -la bazel-bin 2>/dev/null || true
+          echo "out listing:"
           ls -la out 2>/dev/null || true
-          echo "--- kernel/dist ---"
+          echo "kernel/dist listing:"
           ls -la kernel/dist || true
-          # Collect any bazel logs and package them
           mkdir -p /tmp/build-debug
-          find / -maxdepth 5 -type f -name "bazel-kernel-*.log" -o -name "bazel-*.log" -print 2>/dev/null | xargs -r -I{} cp -v {} /tmp/build-debug/ || true
+          find / -maxdepth 5 -type f -name "bazel-kernel-*.log" -o -name "bazel-*.log" -print 2>/dev/null | while IFS= read -r f; do
+            cp -v "$f" /tmp/build-debug/ || true
+          done
           cp -v /tmp/patch-results/* /tmp/build-debug/ 2>/dev/null || true
           tar -czf /tmp/build-debug.tar.gz -C /tmp build-debug || true
 
@@ -199,11 +190,18 @@ jobs:
           path: /tmp/build-debug.tar.gz
           if-no-files-found: warn
 
-      - name: Upload per-patch logs (if any)
+      - name: Upload per-patch logs
         uses: actions/upload-artifact@v4
         with:
           name: per-patch-logs
-          path: /tmp/patch-results/*.log.tar.gz,/tmp/patch-results/*_sched.txt
+          path: /tmp/patch-results/*.log.tar.gz
+          if-no-files-found: warn
+
+      - name: Upload sched snippets
+        uses: actions/upload-artifact@v4
+        with:
+          name: sched-snippets
+          path: /tmp/patch-results/*_sched.txt
           if-no-files-found: warn
 
       - name: Upload Image for 6_7_8
