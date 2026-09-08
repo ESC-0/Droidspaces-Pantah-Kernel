@@ -1,4 +1,4 @@
-name: Build Pixel 7 kernel (sultan-17; per-pattern safer builds with llvm fix)
+name: Build Pixel 7 kernel (sultan-17; per-pattern safer builds + shrinker shim)
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ jobs:
             libssl-dev libelf-dev pahole libncurses-dev zlib1g-dev libyaml-dev \
             lz4 zstd device-tree-compiler wget openjdk-11-jdk lld llvm
 
-      - name: Create 16G swapfile (improves reliability for heavy host tools)
+      - name: Create 16G swapfile (improves reliability)
         run: |
           set -euo pipefail
           SWAPFILE=/swapfile
@@ -78,7 +78,7 @@ jobs:
           rm -rf aosp-base || true
           cp -a aosp aosp-base
 
-      - name: Pattern 678 - apply patch and build
+      - name: Pattern 678 - apply patch, shim, and build
         working-directory: kernel
         continue-on-error: true
         run: |
@@ -111,6 +111,7 @@ jobs:
             popd >/dev/null
           fi
 
+          # inject fragment or create fallback fragment
           if [ -f "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" ]; then
             mkdir -p "${workdir}/arch/arm64/configs"
             cp "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" "${workdir}/arch/arm64/configs/extra-frag.config"
@@ -121,6 +122,16 @@ jobs:
             echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
           fi
 
+          # Add a compatibility shim so shrinker_rwsem is declared if missing
+          # (creates include/linux/shrinker_compat.h and includes it in mm/vmscan.c)
+          pushd "${workdir}" >/dev/null
+          mkdir -p include/linux
+          printf '%s\n' '#ifndef _SHRINKER_COMPAT_H' '#define _SHRINKER_COMPAT_H' '#include <linux/rwsem.h>' '#ifndef CONFIG_SHRINKER_RWSEM' 'extern struct rw_semaphore shrinker_rwsem;' '#endif' '#endif' > include/linux/shrinker_compat.h
+          if ! grep -q 'shrinker_compat.h' mm/vmscan.c 2>/dev/null; then
+            sed -i '1i#include <linux/shrinker_compat.h>' mm/vmscan.c || true
+          fi
+          popd >/dev/null
+
           # ensure clang toolchain present
           CLANG_DIR="${HOME}/toolchains/clang-r510928"
           if [ ! -d "${CLANG_DIR}" ]; then
@@ -128,7 +139,7 @@ jobs:
             curl -sL https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r510928.tar.gz | tar -xzf - -C "${HOME}/toolchains/"
           fi
 
-          # prefer system llvm-nm (installed via apt) to avoid toolchain llvm-nm OOM
+          # prefer system llvm-nm to avoid toolchain llvm-nm OOM; ensure PATH includes /usr/bin first
           export PATH="/usr/bin:${CLANG_DIR}/bin:${HOME}/bin:${PATH}"
           export LD_LIBRARY_PATH="${CLANG_DIR}/lib:${CLANG_DIR}/lib64:${LD_LIBRARY_PATH:-}"
           mkdir -p "${HOME}/bin"
@@ -136,23 +147,19 @@ jobs:
             ln -sf "$(command -v nm)" "${HOME}/bin/llvm-nm" || true
           fi
 
+          # build
           pushd "${workdir}" >/dev/null
           echo "Starting config and build for ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
-
           export MAKEFLAGS=-j1
           DEFCONFIG=gki_defconfig
           BUILD_OPTS="ARCH=arm64 O=${PWD}/out LLVM=1 LLVM_IAS=1 HOSTCC=gcc HOSTCXX=g++"
-
           make ${BUILD_OPTS} "${DEFCONFIG}" EXTRA_CONFIGS="extra-frag.config" 2>&1 | tee "${LOGDIR}/defconfig-output-${short}.log" || true
-
           if ! grep -q '^CONFIG_SHRINKER_RWSEM=y' out/.config 2>/dev/null; then
             echo 'CONFIG_SHRINKER_RWSEM=y' >> out/.config || true
             make ${BUILD_OPTS} olddefconfig 2>&1 | tee -a "${LOGDIR}/defconfig-output-${short}.log" || true
             echo "forced CONFIG_SHRINKER_RWSEM=y" > "${LOGDIR}/forced-config-${short}.txt" || true
           fi
-
           make ${BUILD_OPTS} Image 2>&1 | tee "${LOGDIR}/build-output-${short}.log" || true
-
           tail -n 2000 "${LOGDIR}/build-output-${short}.log" > "${LOGDIR}/build-output-tail-${short}.txt" || true
           ls -la > "${LOGDIR}/workdir-listing-${short}.txt" || true
 
@@ -188,7 +195,8 @@ jobs:
           path: kernel/dist/678
           if-no-files-found: warn
 
-      - name: Pattern 345 - apply patch and build
+      # Pattern 345 (same shim + build steps)
+      - name: Pattern 345 - apply patch, shim, and build
         working-directory: kernel
         continue-on-error: true
         run: |
@@ -231,12 +239,19 @@ jobs:
             echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
           fi
 
+          pushd "${workdir}" >/dev/null
+          mkdir -p include/linux
+          printf '%s\n' '#ifndef _SHRINKER_COMPAT_H' '#define _SHRINKER_COMPAT_H' '#include <linux/rwsem.h>' '#ifndef CONFIG_SHRINKER_RWSEM' 'extern struct rw_semaphore shrinker_rwsem;' '#endif' '#endif' > include/linux/shrinker_compat.h
+          if ! grep -q 'shrinker_compat.h' mm/vmscan.c 2>/dev/null; then
+            sed -i '1i#include <linux/shrinker_compat.h>' mm/vmscan.c || true
+          fi
+          popd >/dev/null
+
           CLANG_DIR="${HOME}/toolchains/clang-r510928"
           if [ ! -d "${CLANG_DIR}" ]; then
             mkdir -p "${HOME}/toolchains"
             curl -sL https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r510928.tar.gz | tar -xzf - -C "${HOME}/toolchains/"
           fi
-
           export PATH="/usr/bin:${CLANG_DIR}/bin:${HOME}/bin:${PATH}"
           export LD_LIBRARY_PATH="${CLANG_DIR}/lib:${CLANG_DIR}/lib64:${LD_LIBRARY_PATH:-}"
           mkdir -p "${HOME}/bin"
@@ -249,15 +264,12 @@ jobs:
           export MAKEFLAGS=-j1
           DEFCONFIG=gki_defconfig
           BUILD_OPTS="ARCH=arm64 O=${PWD}/out LLVM=1 LLVM_IAS=1 HOSTCC=gcc HOSTCXX=g++"
-
           make ${BUILD_OPTS} "${DEFCONFIG}" EXTRA_CONFIGS="extra-frag.config" 2>&1 | tee "${LOGDIR}/defconfig-output-${short}.log" || true
-
           if ! grep -q '^CONFIG_SHRINKER_RWSEM=y' out/.config 2>/dev/null; then
             echo 'CONFIG_SHRINKER_RWSEM=y' >> out/.config || true
             make ${BUILD_OPTS} olddefconfig 2>&1 | tee -a "${LOGDIR}/defconfig-output-${short}.log" || true
             echo "forced CONFIG_SHRINKER_RWSEM=y" > "${LOGDIR}/forced-config-${short}.txt" || true
           fi
-
           make ${BUILD_OPTS} Image 2>&1 | tee "${LOGDIR}/build-output-${short}.log" || true
           tail -n 2000 "${LOGDIR}/build-output-${short}.log" > "${LOGDIR}/build-output-tail-${short}.txt" || true
           ls -la > "${LOGDIR}/workdir-listing-${short}.txt" || true
@@ -275,7 +287,6 @@ jobs:
 
           find out -name .config -type f -exec cp -v {} "${LOGDIR}/final.config" \; 2>/dev/null || true
           popd >/dev/null
-
           tar -czf "/tmp/patch-results/${short}-logs.tar.gz" -C "/tmp/patch-results/${short}" . || true
 
       - name: Upload per-road-logs-345
@@ -294,7 +305,8 @@ jobs:
           path: kernel/dist/345
           if-no-files-found: warn
 
-      - name: Pattern 123 - apply patch and build
+      # Pattern 123 (same shim + build)
+      - name: Pattern 123 - apply patch, shim, and build
         working-directory: kernel
         continue-on-error: true
         run: |
@@ -337,6 +349,14 @@ jobs:
             echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
           fi
 
+          pushd "${workdir}" >/dev/null
+          mkdir -p include/linux
+          printf '%s\n' '#ifndef _SHRINKER_COMPAT_H' '#define _SHRINKER_COMPAT_H' '#include <linux/rwsem.h>' '#ifndef CONFIG_SHRINKER_RWSEM' 'extern struct rw_semaphore shrinker_rwsem;' '#endif' '#endif' > include/linux/shrinker_compat.h
+          if ! grep -q 'shrinker_compat.h' mm/vmscan.c 2>/dev/null; then
+            sed -i '1i#include <linux/shrinker_compat.h>' mm/vmscan.c || true
+          fi
+          popd >/dev/null
+
           CLANG_DIR="${HOME}/toolchains/clang-r510928"
           if [ ! -d "${CLANG_DIR}" ]; then
             mkdir -p "${HOME}/toolchains"
@@ -355,15 +375,12 @@ jobs:
           export MAKEFLAGS=-j1
           DEFCONFIG=gki_defconfig
           BUILD_OPTS="ARCH=arm64 O=${PWD}/out LLVM=1 LLVM_IAS=1 HOSTCC=gcc HOSTCXX=g++"
-
           make ${BUILD_OPTS} "${DEFCONFIG}" EXTRA_CONFIGS="extra-frag.config" 2>&1 | tee "${LOGDIR}/defconfig-output-${short}.log" || true
-
           if ! grep -q '^CONFIG_SHRINKER_RWSEM=y' out/.config 2>/dev/null; then
             echo 'CONFIG_SHRINKER_RWSEM=y' >> out/.config || true
             make ${BUILD_OPTS} olddefconfig 2>&1 | tee -a "${LOGDIR}/defconfig-output-${short}.log" || true
             echo "forced CONFIG_SHRINKER_RWSEM=y" > "${LOGDIR}/forced-config-${short}.txt" || true
           fi
-
           make ${BUILD_OPTS} Image 2>&1 | tee "${LOGDIR}/build-output-${short}.log" || true
           tail -n 2000 "${LOGDIR}/build-output-${short}.log" > "${LOGDIR}/build-output-tail-${short}.txt" || true
           ls -la > "${LOGDIR}/workdir-listing-${short}.txt" || true
@@ -381,7 +398,6 @@ jobs:
 
           find out -name .config -type f -exec cp -v {} "${LOGDIR}/final.config" \; 2>/dev/null || true
           popd >/dev/null
-
           tar -czf "/tmp/patch-results/${short}-logs.tar.gz" -C "/tmp/patch-results/${short}" . || true
 
       - name: Upload per-road-logs-123
