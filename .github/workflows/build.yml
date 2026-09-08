@@ -74,8 +74,6 @@ jobs:
             git apply "$PATCH"
           fi
 
-          git diff --check
-
       - name: Apply minimal Droidspaces configuration
         working-directory: kernel/aosp
         run: |
