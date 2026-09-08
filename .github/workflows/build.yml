@@ -68,6 +68,7 @@ jobs:
             rm -rf "${LOGDIR}" || true
             mkdir -p "${LOGDIR}"
 
+            # attempt patch inside isolated copy
             if [ ! -f "$PATCH" ]; then
               echo "missing-patch" > "${LOGDIR}/status.txt"
             else
@@ -87,9 +88,9 @@ jobs:
               popd >/dev/null
             fi
 
+            # write droidspaces.config reliably (avoid heredoc indentation issues)
             CFG="${workdir}/arch/arm64/configs/gki_defconfig"
             cp "$CFG" "${CFG}.before-droidspaces" || true
-            
             printf '%s\n' "CONFIG_SYSVIPC=y" > "${workdir}/droidspaces.config"
             printf '%s\n' "CONFIG_POSIX_MQUEUE=y" >> "${workdir}/droidspaces.config"
             printf '%s\n' "CONFIG_NAMESPACES=y" >> "${workdir}/droidspaces.config"
@@ -108,21 +109,34 @@ jobs:
             printf '%s\n' "CONFIG_NETFILTER_XT_SET=y" >> "${workdir}/droidspaces.config"
             printf '%s\n' "CONFIG_TMPFS_POSIX_ACL=y" >> "${workdir}/droidspaces.config"
             printf '%s\n' "CONFIG_TMPFS_XATTR=y" >> "${workdir}/droidspaces.config"
-            
+
+            # merge fragment into defconfig
             while IFS= read -r setting; do
               option="${setting%%=*}"
               sed -i -e "/^${option}=.*$/d" -e "/^# ${option} is not set$/d" "$CFG" || true
               printf '%s\n' "${setting}" >> "$CFG"
             done < "${workdir}/droidspaces.config"
 
+            # swap aosp to point to this workdir
             mv aosp aosp.orig || true
             ln -s "${workdir}" aosp
 
+            # build and capture logs
             rm -rf out bazel-bin bazel-out bazel-testlogs dist || true
-            mkdir -p dist
-            tools/bazel build --config=local --spawn_strategy=local --strategy=KernelBuild=local --disk_cache= --repository_cache= //common:kernel_aarch64 || true
-            tools/bazel build --config=local --spawn_strategy=local --strategy=KernelBuild=local --disk_cache= --repository_cache= //common:kernel_aarch64_images || true
+            mkdir -p dist "${LOGDIR}"
+            if ! tools/bazel build --config=local --spawn_strategy=local --strategy=KernelBuild=local --disk_cache= --repository_cache= //common:kernel_aarch64 2>&1 | tee "${LOGDIR}/bazel-kernel-${label}.log"; then
+              echo "bazel-kernel-failed" > "${LOGDIR}/build-status.txt"
+            fi
+            if ! tools/bazel build --config=local --spawn_strategy=local --strategy=KernelBuild=local --disk_cache= --repository_cache= //common:kernel_aarch64_images 2>&1 | tee -a "${LOGDIR}/bazel-kernel-${label}.log"; then
+              echo "bazel-images-failed" >> "${LOGDIR}/build-status.txt"
+            fi
 
+            # save final .config if produced
+            if CONFIG_FILE="$(find out -name .config -type f -print -quit 2>/dev/null || true)"; then
+              cp -v "$CONFIG_FILE" "${LOGDIR}/final.config" || true
+            fi
+
+            # collect Image if present
             IMAGE="$(find bazel-bin out -type f -name Image -print -quit || true)"
             if [ -n "$IMAGE" ]; then
               mkdir -p kernel/dist/${label}
@@ -131,9 +145,11 @@ jobs:
               echo "no-image-built" > "${LOGDIR}/build-status.txt"
             fi
 
+            # restore original aosp
             rm aosp || true
             mv aosp.orig aosp || true
 
+            # package per-patch logs
             tar -czf "/tmp/patch-results/${label}.log.tar.gz" -C "/tmp/patch-results/${label}" . || true
             cp /tmp/patch-results/sched-full.txt /tmp/patch-results/${label}_sched.txt || true
           done
