@@ -1,4 +1,4 @@
-name: Build Pixel 7 kernel (sultan-17; per-pattern uploads)
+name: Build Pixel 7 kernel (sultan-17; per-pattern safer builds)
 
 on:
   workflow_dispatch:
@@ -61,16 +61,16 @@ jobs:
           mkdir -p kernel
           git clone --depth=1 --branch "${KERNEL_FORK_BRANCH}" "${KERNEL_FORK_REPO}" kernel/aosp
 
-      - name: Prepare aosp-base and get build script
+      - name: Prepare aosp-base
         working-directory: kernel
         run: |
           set -euo pipefail
           rm -rf aosp-base || true
           cp -a aosp aosp-base
-          curl -fsSL -o build_6.1.sh \
-            https://raw.githubusercontent.com/ravindu644/Android-Kernel-Tutorials/f0e815e5ee1197e7d25142c74060dfa4e10d38da/build_scripts/build_6.1.sh
-          chmod +x build_6.1.sh
 
+      ####################################################################
+      # Pattern 678
+      ####################################################################
       - name: Pattern 678 - apply patch and build
         working-directory: kernel
         continue-on-error: true
@@ -104,36 +104,56 @@ jobs:
             popd >/dev/null
           fi
 
-          cp build_6.1.sh "${workdir}/build_6.1.sh"
-          chmod +x "${workdir}/build_6.1.sh"
-          sed -i 's/^[[:space:]]*install_deps[[:space:]]*$/# install_deps disabled in CI: packages preinstalled/' "${workdir}/build_6.1.sh" || true
-          sed -i 's/^MENUCONFIG=.*/MENUCONFIG=0/' "${workdir}/build_6.1.sh" || true
-          sed -n '1,140p' "${workdir}/build_6.1.sh" > "${LOGDIR}/build_6.1-modified-head-${short}.txt" || true
-
+          # inject fragment or create a minimal fallback (printf is indentation-safe)
           if [ -f "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" ]; then
             mkdir -p "${workdir}/arch/arm64/configs"
             cp "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" "${workdir}/arch/arm64/configs/extra-frag.config"
-            sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
             echo "copied fragment" > "${LOGDIR}/extra_config_injected-${short}.txt"
           else
             mkdir -p "${workdir}/arch/arm64/configs"
             printf '%s\n' '# auto-generated fallback fragment' 'CONFIG_SHRINKER_RWSEM=y' > "${workdir}/arch/arm64/configs/extra-frag.config"
-            sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
             echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
           fi
 
+          # fetch the clang toolchain used by the original script
+          CLANG_DIR="${HOME}/toolchains/clang-r510928"
+          if [ ! -d "${CLANG_DIR}" ]; then
+            mkdir -p "${CLANG_DIR}"
+            curl -sL https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r510928.tar.gz | tar -xzf - -C "${HOME}/toolchains/"
+          fi
+          export PATH="${CLANG_DIR}/bin:${PATH}"
+          export LD_LIBRARY_PATH="${CLANG_DIR}/lib:${CLANG_DIR}/lib64:${LD_LIBRARY_PATH:-}"
+
+          # Build using direct make commands (avoid build_6.1.sh heredoc/flow issues)
+          pushd "${workdir}" >/dev/null
+          echo "Starting config and build for ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
+
+          # Limit parallelism
           export MAKEFLAGS=-j2
 
-          pushd "${workdir}" >/dev/null
-          echo "Starting build for ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
-          if ./build_6.1.sh 2>&1 | tee "${LOGDIR}/build-output-${short}.log"; then
-            echo "build-succeeded" > "${LOGDIR}/build-status-${short}.txt"
-          else
-            echo "build-failed" > "${LOGDIR}/build-status-${short}.txt"
+          # Write defconfig to out/.config while including extra-frag.config
+          # DEFCONFIG intentionally set to gki_defconfig (same as build_6.1.sh)
+          DEFCONFIG=gki_defconfig
+          BUILD_OPTS="ARCH=arm64 O=${PWD}/out LLVM=1 LLVM_IAS=1 HOSTCC=gcc HOSTCXX=g++"
+
+          # Run defconfig (with EXTRA_CONFIGS merged)
+          make ${BUILD_OPTS} "${DEFCONFIG}" EXTRA_CONFIGS="extra-frag.config" 2>&1 | tee "${LOGDIR}/defconfig-output-${short}.log" || true
+
+          # Ensure the required option is enabled; if not, force it and olddefconfig
+          if ! grep -q '^CONFIG_SHRINKER_RWSEM=y' out/.config 2>/dev/null; then
+            echo 'CONFIG_SHRINKER_RWSEM=y' >> out/.config || true
+            make ${BUILD_OPTS} olddefconfig 2>&1 | tee -a "${LOGDIR}/defconfig-output-${short}.log" || true
+            echo "forced CONFIG_SHRINKER_RWSEM=y" > "${LOGDIR}/forced-config-${short}.txt" || true
           fi
+
+          # Now build the kernel image
+          make ${BUILD_OPTS} Image 2>&1 | tee "${LOGDIR}/build-output-${short}.log" || true
+
+          # Capture tail for easier debugging
           tail -n 2000 "${LOGDIR}/build-output-${short}.log" > "${LOGDIR}/build-output-tail-${short}.txt" || true
           ls -la > "${LOGDIR}/workdir-listing-${short}.txt" || true
 
+          # Copy produced image if present
           if [ -f out/arch/arm64/boot/Image ]; then
             mkdir -p ../../kernel/dist/${short}
             cp out/arch/arm64/boot/Image ../../kernel/dist/${short}/Image || true
@@ -145,9 +165,11 @@ jobs:
             cp build/Image ../../kernel/dist/${short}/Image || true
           fi
 
+          # Save final config if available
           find out -name .config -type f -exec cp -v {} "${LOGDIR}/final.config" \; 2>/dev/null || true
           popd >/dev/null
 
+          # package logs for upload
           tar -czf "/tmp/patch-results/${short}-logs.tar.gz" -C "/tmp/patch-results/${short}" . || true
 
       - name: Upload per-road-logs-678
@@ -166,6 +188,9 @@ jobs:
           path: kernel/dist/678
           if-no-files-found: warn
 
+      ####################################################################
+      # Pattern 345 - same steps repeated
+      ####################################################################
       - name: Pattern 345 - apply patch and build
         working-directory: kernel
         continue-on-error: true
@@ -199,33 +224,39 @@ jobs:
             popd >/dev/null
           fi
 
-          cp build_6.1.sh "${workdir}/build_6.1.sh"
-          chmod +x "${workdir}/build_6.1.sh"
-          sed -i 's/^[[:space:]]*install_deps[[:space:]]*$/# install_deps disabled in CI: packages preinstalled/' "${workdir}/build_6.1.sh" || true
-          sed -i 's/^MENUCONFIG=.*/MENUCONFIG=0/' "${workdir}/build_6.1.sh" || true
-          sed -n '1,140p' "${workdir}/build_6.1.sh" > "${LOGDIR}/build_6.1-modified-head-${short}.txt" || true
-
           if [ -f "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" ]; then
             mkdir -p "${workdir}/arch/arm64/configs"
             cp "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" "${workdir}/arch/arm64/configs/extra-frag.config"
-            sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
             echo "copied fragment" > "${LOGDIR}/extra_config_injected-${short}.txt"
           else
             mkdir -p "${workdir}/arch/arm64/configs"
             printf '%s\n' '# auto-generated fallback fragment' 'CONFIG_SHRINKER_RWSEM=y' > "${workdir}/arch/arm64/configs/extra-frag.config"
-            sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
             echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
           fi
 
-          export MAKEFLAGS=-j2
+          CLANG_DIR="${HOME}/toolchains/clang-r510928"
+          if [ ! -d "${CLANG_DIR}" ]; then
+            mkdir -p "${CLANG_DIR}"
+            curl -sL https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r510928.tar.gz | tar -xzf - -C "${HOME}/toolchains/"
+          fi
+          export PATH="${CLANG_DIR}/bin:${PATH}"
+          export LD_LIBRARY_PATH="${CLANG_DIR}/lib:${CLANG_DIR}/lib64:${LD_LIBRARY_PATH:-}"
 
           pushd "${workdir}" >/dev/null
-          echo "Starting build for ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
-          if ./build_6.1.sh 2>&1 | tee "${LOGDIR}/build-output-${short}.log"; then
-            echo "build-succeeded" > "${LOGDIR}/build-status-${short}.txt"
-          else
-            echo "build-failed" > "${LOGDIR}/build-status-${short}.txt"
+          echo "Starting config and build for ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
+          export MAKEFLAGS=-j2
+          DEFCONFIG=gki_defconfig
+          BUILD_OPTS="ARCH=arm64 O=${PWD}/out LLVM=1 LLVM_IAS=1 HOSTCC=gcc HOSTCXX=g++"
+
+          make ${BUILD_OPTS} "${DEFCONFIG}" EXTRA_CONFIGS="extra-frag.config" 2>&1 | tee "${LOGDIR}/defconfig-output-${short}.log" || true
+
+          if ! grep -q '^CONFIG_SHRINKER_RWSEM=y' out/.config 2>/dev/null; then
+            echo 'CONFIG_SHRINKER_RWSEM=y' >> out/.config || true
+            make ${BUILD_OPTS} olddefconfig 2>&1 | tee -a "${LOGDIR}/defconfig-output-${short}.log" || true
+            echo "forced CONFIG_SHRINKER_RWSEM=y" > "${LOGDIR}/forced-config-${short}.txt" || true
           fi
+
+          make ${BUILD_OPTS} Image 2>&1 | tee "${LOGDIR}/build-output-${short}.log" || true
           tail -n 2000 "${LOGDIR}/build-output-${short}.log" > "${LOGDIR}/build-output-tail-${short}.txt" || true
           ls -la > "${LOGDIR}/workdir-listing-${short}.txt" || true
 
@@ -261,6 +292,9 @@ jobs:
           path: kernel/dist/345
           if-no-files-found: warn
 
+      ####################################################################
+      # Pattern 123
+      ####################################################################
       - name: Pattern 123 - apply patch and build
         working-directory: kernel
         continue-on-error: true
@@ -282,8 +316,9 @@ jobs:
             pushd "${workdir}" >/dev/null
             if git apply --reverse --check "$PATCH" 2>/dev/null; then
               echo "already-applied" > "${LOGDIR}/apply-status-${short}.txt"
-          elif git apply --check "$PATCH" 2>/dev/null && git apply "$PATCH"; then
+            elif git apply --check "$PATCH" 2>/dev/null && git apply "$PATCH"; then
               echo "applied-clean" > "${LOGDIR}/apply-status-${short}.txt"
+              git diff --name-only > "${LOGDIR}/applied-files-${short}.txt" || true
             else
               echo "apply-failed" > "${LOGDIR}/apply-status-${short}.txt"
               git apply --reject --whitespace=fix "$PATCH" 2> "${LOGDIR}/apply-stderr-${short}.txt" || true
@@ -293,33 +328,39 @@ jobs:
             popd >/dev/null
           fi
 
-          cp build_6.1.sh "${workdir}/build_6.1.sh"
-          chmod +x "${workdir}/build_6.1.sh"
-          sed -i 's/^[[:space:]]*install_deps[[:space:]]*$/# install_deps disabled in CI: packages preinstalled/' "${workdir}/build_6.1.sh" || true
-          sed -i 's/^MENUCONFIG=.*/MENUCONFIG=0/' "${workdir}/build_6.1.sh" || true
-          sed -n '1,140p' "${workdir}/build_6.1.sh" > "${LOGDIR}/build_6.1-modified-head-${short}.txt" || true
-
           if [ -f "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" ]; then
             mkdir -p "${workdir}/arch/arm64/configs"
             cp "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" "${workdir}/arch/arm64/configs/extra-frag.config"
-            sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
             echo "copied fragment" > "${LOGDIR}/extra_config_injected-${short}.txt"
           else
             mkdir -p "${workdir}/arch/arm64/configs"
             printf '%s\n' '# auto-generated fallback fragment' 'CONFIG_SHRINKER_RWSEM=y' > "${workdir}/arch/arm64/configs/extra-frag.config"
-            sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
             echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
           fi
 
-          export MAKEFLAGS=-j2
+          CLANG_DIR="${HOME}/toolchains/clang-r510928"
+          if [ ! -d "${CLANG_DIR}" ]; then
+            mkdir -p "${CLANG_DIR}"
+            curl -sL https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r510928.tar.gz | tar -xzf - -C "${HOME}/toolchains/"
+          fi
+          export PATH="${CLANG_DIR}/bin:${PATH}"
+          export LD_LIBRARY_PATH="${CLANG_DIR}/lib:${CLANG_DIR}/lib64:${LD_LIBRARY_PATH:-}"
 
           pushd "${workdir}" >/dev/null
-          echo "Starting build for ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
-          if ./build_6.1.sh 2>&1 | tee "${LOGDIR}/build-output-${short}.log"; then
-            echo "build-succeeded" > "${LOGDIR}/build-status-${short}.txt"
-          else
-            echo "build-failed" > "${LOGDIR}/build-status-${short}.txt"
+          echo "Starting config and build for ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
+          export MAKEFLAGS=-j2
+          DEFCONFIG=gki_defconfig
+          BUILD_OPTS="ARCH=arm64 O=${PWD}/out LLVM=1 LLVM_IAS=1 HOSTCC=gcc HOSTCXX=g++"
+
+          make ${BUILD_OPTS} "${DEFCONFIG}" EXTRA_CONFIGS="extra-frag.config" 2>&1 | tee "${LOGDIR}/defconfig-output-${short}.log" || true
+
+          if ! grep -q '^CONFIG_SHRINKER_RWSEM=y' out/.config 2>/dev/null; then
+            echo 'CONFIG_SHRINKER_RWSEM=y' >> out/.config || true
+            make ${BUILD_OPTS} olddefconfig 2>&1 | tee -a "${LOGDIR}/defconfig-output-${short}.log" || true
+            echo "forced CONFIG_SHRINKER_RWSEM=y" > "${LOGDIR}/forced-config-${short}.txt" || true
           fi
+
+          make ${BUILD_OPTS} Image 2>&1 | tee "${LOGDIR}/build-output-${short}.log" || true
           tail -n 2000 "${LOGDIR}/build-output-${short}.log" > "${LOGDIR}/build-output-tail-${short}.txt" || true
           ls -la > "${LOGDIR}/workdir-listing-${short}.txt" || true
 
