@@ -63,7 +63,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          PATCH="$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_3_4_5.patch"
+          PATCH="$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_1_2_3.patch"
 
           test -f "$PATCH"
 
