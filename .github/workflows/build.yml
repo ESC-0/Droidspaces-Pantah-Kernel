@@ -154,11 +154,41 @@ jobs:
             cp /tmp/patch-results/sched-full.txt /tmp/patch-results/${label}_sched.txt || true
           done
 
+      - name: Debug: list build outputs and package bazel logs
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          echo "=== ROOT: $(pwd) ==="
+          echo "--- aosp listing ---"
+          ls -la aosp || true
+          echo "--- aosp-base listing ---"
+          ls -la aosp-base || true
+          echo "--- bazel-bin & out ---"
+          du -sh bazel-bin 2>/dev/null || true
+          du -sh out 2>/dev/null || true
+          ls -la bazel-bin 2>/dev/null || true
+          ls -la out 2>/dev/null || true
+          echo "--- kernel/dist ---"
+          ls -la kernel/dist || true
+          # Collect any bazel logs and package them
+          mkdir -p /tmp/build-debug
+          find / -maxdepth 5 -type f -name "bazel-kernel-*.log" -o -name "bazel-*.log" -print 2>/dev/null | xargs -r -I{} cp -v {} /tmp/build-debug/ || true
+          cp -v /tmp/patch-results/* /tmp/build-debug/ 2>/dev/null || true
+          tar -czf /tmp/build-debug.tar.gz -C /tmp build-debug || true
+
+      - name: Upload build-debug artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-debug
+          path: /tmp/build-debug.tar.gz
+          if-no-files-found: warn
+
       - name: Upload per-patch logs (if any)
         uses: actions/upload-artifact@v4
         with:
           name: per-patch-logs
           path: /tmp/patch-results/*.log.tar.gz,/tmp/patch-results/*_sched.txt
+          if-no-files-found: warn
 
       - name: Upload Image for 6_7_8
         uses: actions/upload-artifact@v4
