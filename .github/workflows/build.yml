@@ -1,7 +1,5 @@
 name: Build Pixel 7 kernel (forked Sultan17 minimal change)
 
-on:
-  workflow_dispatch:name: Build Pixel 7 kernel (sultan-17; per-pattern upload)
 
 on:
   workflow_dispatch:
