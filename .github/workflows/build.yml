@@ -1,7 +1,175 @@
 name: Build Pixel 7 kernel with Droidspaces support
 
 on:
+  workflow_dispatch:name: Build Pixel 7 kernel with Droidspaces support
+
+on:
   workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      PATCH_BASE: "$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12"
+
+    steps:
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y git curl python3 python-is-python3 \
+            build-essential bc bison flex patch pkg-config \
+            tar xz-utils zip unzip cpio rsync kmod perl \
+            libssl-dev libelf-dev pahole libncurses-dev \
+            zlib1g-dev libyaml-dev lz4 zstd device-tree-compiler adb fastboot
+
+      - name: Install repo
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/bin"
+          curl -Lf https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Download official Pixel 7 kernel source
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/kernel"
+          cd "$GITHUB_WORKSPACE/kernel"
+          repo init -u https://android.googlesource.com/kernel/manifest -b android-gs-pantah-6.1-android16 --depth=1
+          repo sync -c --force-sync --no-tags -j2
+          test -f aosp/Makefile
+          test -f aosp/arch/arm64/configs/gki_defconfig
+
+      - name: Download Droidspaces source
+        run: |
+          set -euo pipefail
+          git clone --depth=1 https://github.com/ravindu644/Droidspaces-OSS.git "$GITHUB_WORKSPACE/droidspaces"
+
+      - name: Prepare base copy and capture sched.h
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/patch-results
+          nl -ba aosp/include/linux/sched.h | sed -n '1,2200p' > /tmp/patch-results/sched-full.txt || true
+          rm -rf aosp-base || true
+          cp -a aosp aosp-base
+
+      - name: Loop patches -> apply, config, build, collect Image
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          set -x
+          labels=( "6_7_8" "3_4_5" "1_2_3" )
+          for label in "${labels[@]}"; do
+            PATCH="${PATCH_BASE}/001.GKI-below-6.12-fix_sysvipc_kabi_${label}.patch"
+            workdir="aosp-patch-${label}"
+            rm -rf "${workdir}" || true
+            cp -a aosp-base "${workdir}"
+            LOGDIR="/tmp/patch-results/${label}"
+            rm -rf "${LOGDIR}" || true
+            mkdir -p "${LOGDIR}"
+
+            if [ ! -f "$PATCH" ]; then
+              echo "missing-patch" > "${LOGDIR}/status.txt"
+            else
+              pushd "${workdir}" >/dev/null
+              if git apply --reverse --check "$PATCH" 2>/dev/null; then
+                echo "already-applied" > "${LOGDIR}/status.txt"
+                git diff --name-only > "${LOGDIR}/applied-diff.txt" || true
+              elif git apply --check "$PATCH" 2>/dev/null && git apply "$PATCH"; then
+                echo "applied-clean" > "${LOGDIR}/status.txt"
+                git diff --name-only > "${LOGDIR}/applied-diff.txt" || true
+              else
+                echo "apply-failed" > "${LOGDIR}/status.txt"
+                git apply --reject --whitespace=fix "$PATCH" 2> "${LOGDIR}/apply-stderr.txt" || true
+                find . -name '*.rej' -print -exec cp --parents {} "${LOGDIR}/" \; || true
+              fi
+              cp -v "$PATCH" "${LOGDIR}/" 2>/dev/null || true
+              popd >/dev/null
+            fi
+
+            CFG="${workdir}/arch/arm64/configs/gki_defconfig"
+            cp "$CFG" "${CFG}.before-droidspaces" || true
+            cat > "${workdir}/droidspaces.config" <<'EOF'
+CONFIG_SYSVIPC=y
+CONFIG_POSIX_MQUEUE=y
+CONFIG_NAMESPACES=y
+CONFIG_IPC_NS=y
+CONFIG_PID_NS=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
+CONFIG_USER_NS=y
+CONFIG_NETFILTER_XT_TARGET_REJECT=y
+CONFIG_NETFILTER_XT_TARGET_LOG=y
+CONFIG_NETFILTER_XT_MATCH_RECENT=y
+CONFIG_IP_SET=y
+CONFIG_IP_SET_HASH_IP=y
+CONFIG_IP_SET_HASH_NET=y
+CONFIG_NETFILTER_XT_SET=y
+CONFIG_TMPFS_POSIX_ACL=y
+CONFIG_TMPFS_XATTR=y
+EOF
+            while IFS= read -r setting; do
+              option="${setting%%=*}"
+              sed -i -e "/^${option}=.*$/d" -e "/^# ${option} is not set$/d" "$CFG" || true
+              printf '%s\n' "${setting}" >> "$CFG"
+            done < "${workdir}/droidspaces.config"
+
+            mv aosp aosp.orig || true
+            ln -s "${workdir}" aosp
+
+            rm -rf out bazel-bin bazel-out bazel-testlogs dist || true
+            mkdir -p dist
+            tools/bazel build --config=local --spawn_strategy=local --strategy=KernelBuild=local --disk_cache= --repository_cache= //common:kernel_aarch64 || true
+            tools/bazel build --config=local --spawn_strategy=local --strategy=KernelBuild=local --disk_cache= --repository_cache= //common:kernel_aarch64_images || true
+
+            IMAGE="$(find bazel-bin out -type f -name Image -print -quit || true)"
+            if [ -n "$IMAGE" ]; then
+              mkdir -p kernel/dist/${label}
+              cp "$IMAGE" kernel/dist/${label}/Image || true
+            else
+              echo "no-image-built" > "${LOGDIR}/build-status.txt"
+            fi
+
+            rm aosp || true
+            mv aosp.orig aosp || true
+
+            tar -czf "/tmp/patch-results/${label}.log.tar.gz" -C "/tmp/patch-results/${label}" . || true
+            cp /tmp/patch-results/sched-full.txt /tmp/patch-results/${label}_sched.txt || true
+          done
+
+      - name: Upload per-patch logs (if any)
+        uses: actions/upload-artifact@v4
+        with:
+          name: per-patch-logs
+          path: /tmp/patch-results/*.log.tar.gz,/tmp/patch-results/*_sched.txt
+
+      - name: Upload Image for 6_7_8
+        uses: actions/upload-artifact@v4
+        with:
+          name: pixel7-pantah-droidspaces-kernel-6_7_8
+          path: kernel/dist/6_7_8/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Image for 3_4_5
+        uses: actions/upload-artifact@v4
+        with:
+          name: pixel7-pantah-droidspaces-kernel-3_4_5
+          path: kernel/dist/3_4_5/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Image for 1_2_3
+        uses: actions/upload-artifact@v4
+        with:
+          name: pixel7-pantah-droidspaces-kernel-1_2_3
+          path: kernel/dist/1_2_3/
+          if-no-files-found: warn
+          retention-days: 7
 
 jobs:
   build:
