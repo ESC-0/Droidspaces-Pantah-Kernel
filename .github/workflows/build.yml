@@ -1,4 +1,4 @@
-name: Build Pixel 7 kernel (sultan-17; per-pattern safer builds with swap)
+name: Build Pixel 7 kernel (sultan-17; per-pattern safer builds with llvm fix)
 
 on:
   workflow_dispatch:
@@ -18,28 +18,26 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install build dependencies (includes lld)
+      - name: Install build dependencies (includes llvm & lld)
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y build-essential bc bison flex pkg-config \
             git curl tar xz-utils zip unzip cpio rsync kmod perl python3 python-is-python3 \
             libssl-dev libelf-dev pahole libncurses-dev zlib1g-dev libyaml-dev \
-            lz4 zstd device-tree-compiler wget openjdk-11-jdk lld
+            lz4 zstd device-tree-compiler wget openjdk-11-jdk lld llvm
 
-      - name: Create 8G swapfile (improves reliability for heavy builds)
+      - name: Create 16G swapfile (improves reliability for heavy host tools)
         run: |
           set -euo pipefail
           SWAPFILE=/swapfile
-          # avoid recreating if already present
           if [ ! -f "${SWAPFILE}" ]; then
-            sudo fallocate -l 8G "${SWAPFILE}" || sudo dd if=/dev/zero of="${SWAPFILE}" bs=1M count=8192
+            sudo fallocate -l 16G "${SWAPFILE}" || sudo dd if=/dev/zero of="${SWAPFILE}" bs=1M count=16384
             sudo chmod 600 "${SWAPFILE}"
             sudo mkswap "${SWAPFILE}"
             sudo swapon "${SWAPFILE}"
           fi
-          echo "Swap activated:"
-          sudo swapon --show
+          sudo swapon --show || true
 
       - name: Install repo helper and ensure $HOME/bin on PATH
         run: |
@@ -61,10 +59,8 @@ jobs:
           set -euo pipefail
           PATCH_BASE="${GITHUB_WORKSPACE}/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12"
           echo "PATCH_BASE=${PATCH_BASE}" >> "$GITHUB_ENV"
-          echo "Listing PATCH_BASE (if present):"
           ls -la "${PATCH_BASE}" > /tmp/patch_base_list.txt || true
           cat /tmp/patch_base_list.txt || true
-          echo "Checking fragment path in repo:"
           ls -la "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" > /tmp/fragment_list.txt 2>/dev/null || true
           cat /tmp/fragment_list.txt || true
 
@@ -115,7 +111,6 @@ jobs:
             popd >/dev/null
           fi
 
-          # inject fragment or create a minimal fallback (printf is indentation-safe)
           if [ -f "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" ]; then
             mkdir -p "${workdir}/arch/arm64/configs"
             cp "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" "${workdir}/arch/arm64/configs/extra-frag.config"
@@ -126,50 +121,41 @@ jobs:
             echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
           fi
 
-          # ensure clang toolchain present and ld.lld available
+          # ensure clang toolchain present
           CLANG_DIR="${HOME}/toolchains/clang-r510928"
           if [ ! -d "${CLANG_DIR}" ]; then
             mkdir -p "${HOME}/toolchains"
             curl -sL https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r510928.tar.gz | tar -xzf - -C "${HOME}/toolchains/"
           fi
-          export PATH="${CLANG_DIR}/bin:${PATH}"
+
+          # prefer system llvm-nm (installed via apt) to avoid toolchain llvm-nm OOM
+          export PATH="/usr/bin:${CLANG_DIR}/bin:${HOME}/bin:${PATH}"
           export LD_LIBRARY_PATH="${CLANG_DIR}/lib:${CLANG_DIR}/lib64:${LD_LIBRARY_PATH:-}"
           mkdir -p "${HOME}/bin"
-          if ! command -v ld.lld >/dev/null 2>&1; then
-            if [ -x "${CLANG_DIR}/bin/ld.lld" ]; then
-              ln -sf "${CLANG_DIR}/bin/ld.lld" "${HOME}/bin/ld.lld"
-            fi
+          if ! command -v llvm-nm >/dev/null 2>&1 && command -v nm >/dev/null 2>&1; then
+            ln -sf "$(command -v nm)" "${HOME}/bin/llvm-nm" || true
           fi
 
-          # Build using direct make commands (avoid build_6.1.sh flow issues)
           pushd "${workdir}" >/dev/null
           echo "Starting config and build for ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
 
-          # Reduce parallelism to avoid OOMs on runner
           export MAKEFLAGS=-j1
-
-          # Prepare build options
           DEFCONFIG=gki_defconfig
           BUILD_OPTS="ARCH=arm64 O=${PWD}/out LLVM=1 LLVM_IAS=1 HOSTCC=gcc HOSTCXX=g++"
 
-          # Run defconfig merging the fragment
           make ${BUILD_OPTS} "${DEFCONFIG}" EXTRA_CONFIGS="extra-frag.config" 2>&1 | tee "${LOGDIR}/defconfig-output-${short}.log" || true
 
-          # Ensure the required option is enabled; if not, force it and run olddefconfig
           if ! grep -q '^CONFIG_SHRINKER_RWSEM=y' out/.config 2>/dev/null; then
             echo 'CONFIG_SHRINKER_RWSEM=y' >> out/.config || true
             make ${BUILD_OPTS} olddefconfig 2>&1 | tee -a "${LOGDIR}/defconfig-output-${short}.log" || true
             echo "forced CONFIG_SHRINKER_RWSEM=y" > "${LOGDIR}/forced-config-${short}.txt" || true
           fi
 
-          # Build Image
           make ${BUILD_OPTS} Image 2>&1 | tee "${LOGDIR}/build-output-${short}.log" || true
 
-          # Capture tail for easier debugging
           tail -n 2000 "${LOGDIR}/build-output-${short}.log" > "${LOGDIR}/build-output-tail-${short}.txt" || true
           ls -la > "${LOGDIR}/workdir-listing-${short}.txt" || true
 
-          # Copy produced image if present
           if [ -f out/arch/arm64/boot/Image ]; then
             mkdir -p ../../kernel/dist/${short}
             cp out/arch/arm64/boot/Image ../../kernel/dist/${short}/Image || true
@@ -181,11 +167,9 @@ jobs:
             cp build/Image ../../kernel/dist/${short}/Image || true
           fi
 
-          # Save final config if available
           find out -name .config -type f -exec cp -v {} "${LOGDIR}/final.config" \; 2>/dev/null || true
           popd >/dev/null
 
-          # package logs for upload
           tar -czf "/tmp/patch-results/${short}-logs.tar.gz" -C "/tmp/patch-results/${short}" . || true
 
       - name: Upload per-road-logs-678
@@ -252,13 +236,12 @@ jobs:
             mkdir -p "${HOME}/toolchains"
             curl -sL https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r510928.tar.gz | tar -xzf - -C "${HOME}/toolchains/"
           fi
-          export PATH="${CLANG_DIR}/bin:${PATH}"
+
+          export PATH="/usr/bin:${CLANG_DIR}/bin:${HOME}/bin:${PATH}"
           export LD_LIBRARY_PATH="${CLANG_DIR}/lib:${CLANG_DIR}/lib64:${LD_LIBRARY_PATH:-}"
           mkdir -p "${HOME}/bin"
-          if ! command -v ld.lld >/dev/null 2>&1; then
-            if [ -x "${CLANG_DIR}/bin/ld.lld" ]; then
-              ln -sf "${CLANG_DIR}/bin/ld.lld" "${HOME}/bin/ld.lld"
-            fi
+          if ! command -v llvm-nm >/dev/null 2>&1 && command -v nm >/dev/null 2>&1; then
+            ln -sf "$(command -v nm)" "${HOME}/bin/llvm-nm" || true
           fi
 
           pushd "${workdir}" >/dev/null
@@ -359,13 +342,12 @@ jobs:
             mkdir -p "${HOME}/toolchains"
             curl -sL https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r510928.tar.gz | tar -xzf - -C "${HOME}/toolchains/"
           fi
-          export PATH="${CLANG_DIR}/bin:${PATH}"
+
+          export PATH="/usr/bin:${CLANG_DIR}/bin:${HOME}/bin:${PATH}"
           export LD_LIBRARY_PATH="${CLANG_DIR}/lib:${CLANG_DIR}/lib64:${LD_LIBRARY_PATH:-}"
           mkdir -p "${HOME}/bin"
-          if ! command -v ld.lld >/dev/null 2>&1; then
-            if [ -x "${CLANG_DIR}/bin/ld.lld" ]; then
-              ln -sf "${CLANG_DIR}/bin/ld.lld" "${HOME}/bin/ld.lld"
-            fi
+          if ! command -v llvm-nm >/dev/null 2>&1 && command -v nm >/dev/null 2>&1; then
+            ln -sf "$(command -v nm)" "${HOME}/bin/llvm-nm" || true
           fi
 
           pushd "${workdir}" >/dev/null
