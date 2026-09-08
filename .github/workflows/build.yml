@@ -11,7 +11,7 @@ jobs:
       PATCH_BASE: "$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12"
 
     steps:
-      - name: Install dependencies
+      - name: Install dependencies (including JDK & Bazelisk)
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -19,7 +19,13 @@ jobs:
             build-essential bc bison flex patch pkg-config \
             tar xz-utils zip unzip cpio rsync kmod perl \
             libssl-dev libelf-dev pahole libncurses-dev \
-            zlib1g-dev libyaml-dev lz4 zstd device-tree-compiler adb fastboot
+            zlib1g-dev libyaml-dev lz4 zstd device-tree-compiler adb fastboot \
+            openjdk-11-jdk wget gnupg
+          # Install Bazelisk (as /usr/local/bin/bazel)
+          curl -Lo /tmp/bazelisk-linux-amd64 https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
+          sudo mv /tmp/bazelisk-linux-amd64 /usr/local/bin/bazel
+          sudo chmod +x /usr/local/bin/bazel
+          bazel --version || true
 
       - name: Install repo
         run: |
@@ -58,6 +64,13 @@ jobs:
         run: |
           set -euo pipefail
           set -x
+          # Choose bazel command: prefer repository wrapper tools/bazel, fallback to system bazel
+          if [ -x "./tools/bazel" ]; then
+            BAZEL_CMD="./tools/bazel"
+          else
+            BAZEL_CMD="bazel"
+          fi
+
           labels=( "6_7_8" "3_4_5" "1_2_3" )
           for label in "${labels[@]}"; do
             PATCH="${PATCH_BASE}/001.GKI-below-6.12-fix_sysvipc_kabi_${label}.patch"
@@ -124,10 +137,13 @@ jobs:
             # build and capture logs
             rm -rf out bazel-bin bazel-out bazel-testlogs dist || true
             mkdir -p dist "${LOGDIR}"
-            if ! tools/bazel build --config=local --spawn_strategy=local --strategy=KernelBuild=local --disk_cache= --repository_cache= //common:kernel_aarch64 2>&1 | tee "${LOGDIR}/bazel-kernel-${label}.log"; then
+
+            # run kernel build and images build, capture output to per-label logs
+            if ! $BAZEL_CMD build --config=local --spawn_strategy=local --strategy=KernelBuild=local --disk_cache= --repository_cache= //common:kernel_aarch64 2>&1 | tee "${LOGDIR}/bazel-kernel-${label}.log"; then
               echo "bazel-kernel-failed" > "${LOGDIR}/build-status.txt"
             fi
-            if ! tools/bazel build --config=local --spawn_strategy=local --strategy=KernelBuild=local --disk_cache= --repository_cache= //common:kernel_aarch64_images 2>&1 | tee -a "${LOGDIR}/bazel-kernel-${label}.log"; then
+
+            if ! $BAZEL_CMD build --config=local --spawn_strategy=local --strategy=KernelBuild=local --disk_cache= --repository_cache= //common:kernel_aarch64_images 2>&1 | tee -a "${LOGDIR}/bazel-kernel-${label}.log"; then
               echo "bazel-images-failed" >> "${LOGDIR}/build-status.txt"
             fi
 
