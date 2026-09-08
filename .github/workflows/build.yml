@@ -11,6 +11,8 @@ jobs:
     steps:
       - name: Free disk space
         run: |
+          set -euo pipefail
+
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /opt/ghc
@@ -73,53 +75,39 @@ jobs:
             https://github.com/ravindu644/Droidspaces-OSS.git \
             "$GITHUB_WORKSPACE/droidspaces"
 
-      - name: Apply all Droidspaces GKI patches
+      - name: Apply Pixel 7 Droidspaces patch
         working-directory: kernel/aosp
         run: |
           set -euo pipefail
 
           PATCH_DIR="$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12"
 
-          test -d "$PATCH_DIR"
+          PATCH_FILE="$PATCH_DIR/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch"
 
-          mapfile -t PATCHES < <(
-            find "$PATCH_DIR" -maxdepth 1 -type f \
-              \( -name '*.patch' -o -name '*.diff' \) \
-              -print | sort
-          )
+          if [ ! -f "$PATCH_FILE" ]; then
+            echo "Required Pixel 7 patch was not found:"
+            echo "$PATCH_FILE"
+            echo
+            find "$PATCH_DIR" -maxdepth 1 -type f -print | sort
+            exit 1
+          fi
 
-          test "${#PATCHES[@]}" -gt 0
+          echo "Checking patch:"
+          echo "$PATCH_FILE"
 
-          echo "Patches to apply:"
-          printf '%s\n' "${PATCHES[@]}"
-
-          for patch_file in "${PATCHES[@]}"; do
-            echo "::group::Checking $(basename "$patch_file")"
-
-            if git apply --check --whitespace=nowarn "$patch_file"; then
-              echo "Patch applies cleanly."
-            elif git apply --reverse --check --whitespace=nowarn "$patch_file"; then
-              echo "Patch is already applied."
-            else
-              echo "Patch does not apply:"
-              sed -n '1,220p' "$patch_file"
-              git status --short
-              exit 1
-            fi
-
-            echo "::endgroup::"
-          done
-
-          for patch_file in "${PATCHES[@]}"; do
-            if git apply --reverse --check --whitespace=nowarn "$patch_file"; then
-              echo "Skipping already-applied patch: $(basename "$patch_file")"
-            else
-              git apply --whitespace=nowarn "$patch_file"
-            fi
-          done
+          if git apply --reverse --check --whitespace=nowarn "$PATCH_FILE"; then
+            echo "The patch is already applied."
+          elif git apply --check --whitespace=nowarn "$PATCH_FILE"; then
+            git apply --whitespace=nowarn "$PATCH_FILE"
+            echo "The 6_7_8 patch was applied successfully."
+          else
+            echo "The 6_7_8 patch does not apply to this kernel source."
+            git status --short
+            exit 1
+          fi
 
           git diff --check
-          git status --short
+          git diff -- include/linux/sched.h
 
       - name: Create Droidspaces configuration fragment
         working-directory: kernel/aosp
@@ -171,9 +159,18 @@ jobs:
           CONFIG="arch/arm64/configs/gki_defconfig"
 
           cp "$CONFIG" "$CONFIG.before-droidspaces"
-          cat droidspaces.config >> "$CONFIG"
 
-          sort -u "$CONFIG" -o "$CONFIG"
+          while IFS= read -r setting; do
+            option="${setting%%=*}"
+            value="${setting#*=}"
+
+            sed -i \
+              -e "/^${option}=.*$/d" \
+              -e "/^# ${option} is not set$/d" \
+              "$CONFIG"
+
+            printf '%s\n' "${option}=${value}" >> "$CONFIG"
+          done < droidspaces.config
 
           for option in \
             CONFIG_SYSVIPC \
@@ -209,7 +206,7 @@ jobs:
             CONFIG_IP_SET_HASH_NET; do
 
             if ! grep -q "^${option}=y$" "$CONFIG"; then
-              echo "ERROR: ${option} was not enabled in gki_defconfig"
+              echo "ERROR: ${option} was not enabled"
               exit 1
             fi
           done
@@ -217,7 +214,7 @@ jobs:
           git diff --check
           git diff -- "$CONFIG"
 
-      - name: Build Pixel 7 GKI kernel
+      - name: Build Pixel 7 kernel
         working-directory: kernel
         run: |
           set -euo pipefail
@@ -273,7 +270,12 @@ jobs:
             "$CONFIG" | sort
 
           test -n "$(find dist -type f \
-            \( -name 'Image' -o -name 'Image.lz4' -o -name 'Image.gz' -o -name 'Image.gz-dtb' \) \
+            \( \
+              -name 'Image' \
+              -o -name 'Image.lz4' \
+              -o -name 'Image.gz' \
+              -o -name 'Image.gz-dtb' \
+            \) \
             -print -quit)"
 
           find dist -type f -print | sort
