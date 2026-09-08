@@ -1,30 +1,35 @@
-name: Build Pixel 7 kernel with Droidspaces support
+name: Build Pixel 7 kernel (3-pattern runs)
 
 on:
   workflow_dispatch:
+    inputs:
+      extra_config:
+        description: 'Path (in repo) to a config fragment to add to EXTRA_CONFIGS (optional)'
+        required: false
+        default: 'kernel/droidspaces-fragment.config'
 
 jobs:
-  build:
+  build-patterns:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
       PATCH_BASE: "$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12"
-
+      KERNEL_MANIFEST_BRANCH: "android-gs-pantah-6.1-android16"
     steps:
-      - name: Install dependencies including JDK and Bazelisk
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install minimal packages
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y git curl python3 python-is-python3 \
             build-essential bc bison flex patch pkg-config \
             tar xz-utils zip unzip cpio rsync kmod perl \
-            libssl-dev libelf-dev pahole libncurses-dev \
-            zlib1g-dev libyaml-dev lz4 zstd device-tree-compiler adb fastboot \
-            openjdk-11-jdk wget gnupg
-          curl -Lo /tmp/bazelisk-linux-amd64 https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
-          sudo mv /tmp/bazelisk-linux-amd64 /usr/local/bin/bazel
-          sudo chmod +x /usr/local/bin/bazel
-          bazel --version || true
+            libssl-dev libelf-dev libncurses-dev \
+            zlib1g-dev lz4 zstd device-tree-compiler
 
       - name: Install repo tool
         run: |
@@ -34,196 +39,145 @@ jobs:
           chmod +x "$HOME/bin/repo"
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      - name: Download official Pixel 7 kernel source
+      - name: Download Pixel7 kernel (shallow)
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/kernel"
           cd "$GITHUB_WORKSPACE/kernel"
-          repo init -u https://android.googlesource.com/kernel/manifest -b android-gs-pantah-6.1-android16 --depth=1
+          repo init -u https://android.googlesource.com/kernel/manifest -b "$KERNEL_MANIFEST_BRANCH" --depth=1
           repo sync -c --force-sync --no-tags -j2
-          test -f aosp/Makefile
-          test -f aosp/arch/arm64/configs/gki_defconfig
+          test -d aosp || { echo "aosp tree missing"; exit 1; }
 
-      - name: Download Droidspaces source
-        run: |
-          set -euo pipefail
-          git clone --depth=1 https://github.com/ravindu644/Droidspaces-OSS.git "$GITHUB_WORKSPACE/droidspaces"
-
-      - name: Prepare base copy and capture sched.h
+      - name: Prepare base copy (preserve .git)
         working-directory: kernel
         run: |
           set -euo pipefail
-          mkdir -p /tmp/patch-results
-          nl -ba aosp/include/linux/sched.h | sed -n '1,2200p' > /tmp/patch-results/sched-full.txt || true
           rm -rf aosp-base || true
           cp -a aosp aosp-base
+          mkdir -p /tmp/patch-results
 
-      - name: Apply patches sequentially, build, and collect Image per-label
+      - name: Download official build_6.1.sh script
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          # use the upstream raw script; will be tweaked per-run
+          curl -fsSL -o build_6.1.sh \
+            https://raw.githubusercontent.com/ravindu644/Android-Kernel-Tutorials/f0e815e5ee1197e7d25142c74060dfa4e10d38da/build_scripts/build_6.1.sh
+          chmod +x build_6.1.sh
+          sed -n '1,120p' build_6.1.sh || true
+
+      - name: Run three sequential patch+build roads (678,345,123)
         working-directory: kernel
         run: |
           set -euo pipefail
           set -x
-          if [ -x "./tools/bazel" ]; then
-            BAZEL_CMD="./tools/bazel"
-          else
-            BAZEL_CMD="bazel"
-          fi
-
+          EXTRA_CONFIG="${{ github.event.inputs.extra_config }}"
+          # map patterns -> short name
+          declare -A MAP=( ["6_7_8"]="678" ["3_4_5"]="345" ["1_2_3"]="123" )
           labels=( "6_7_8" "3_4_5" "1_2_3" )
           for label in "${labels[@]}"; do
-            PATCH="${PATCH_BASE}/001.GKI-below-6.12-fix_sysvipc_kabi_${label}.patch"
-            workdir="aosp-patch-${label}"
-            rm -rf "${workdir}" || true
-            cp -a aosp-base "${workdir}"
+            short="${MAP[$label]}"
             LOGDIR="/tmp/patch-results/${label}"
             rm -rf "${LOGDIR}" || true
             mkdir -p "${LOGDIR}"
+            workdir="aosp-patch-${label}"
+            rm -rf "${workdir}" || true
+            cp -a aosp-base "${workdir}"
 
+            PATCH="${PATCH_BASE}/001.GKI-below-6.12-fix_sysvipc_kabi_${label}.patch"
+            # record patch apply attempt
             if [ ! -f "$PATCH" ]; then
-              echo "missing-patch" > "${LOGDIR}/status.txt"
+              echo "missing-patch: $PATCH" > "${LOGDIR}/apply-status.txt"
             else
-              pushd "${workdir}" >/dev/null
+              pushd "${workdir}" >/dev/null || exit 1
               if git apply --reverse --check "$PATCH" 2>/dev/null; then
-                echo "already-applied" > "${LOGDIR}/status.txt"
-                git diff --name-only > "${LOGDIR}/applied-diff.txt" || true
+                echo "already-applied" > "${LOGDIR}/apply-status.txt"
               elif git apply --check "$PATCH" 2>/dev/null && git apply "$PATCH"; then
-                echo "applied-clean" > "${LOGDIR}/status.txt"
-                git diff --name-only > "${LOGDIR}/applied-diff.txt" || true
+                echo "applied-clean" > "${LOGDIR}/apply-status.txt"
+                git diff --name-only > "${LOGDIR}/applied-files.txt" || true
               else
-                echo "apply-failed" > "${LOGDIR}/status.txt"
+                echo "apply-failed" > "${LOGDIR}/apply-status.txt"
                 git apply --reject --whitespace=fix "$PATCH" 2> "${LOGDIR}/apply-stderr.txt" || true
+                # collect .rej files
                 find . -name '*.rej' -print -exec cp --parents {} "${LOGDIR}/" \; || true
               fi
               cp -v "$PATCH" "${LOGDIR}/" 2>/dev/null || true
               popd >/dev/null
             fi
 
-            CFG="${workdir}/arch/arm64/configs/gki_defconfig"
-            cp "$CFG" "${CFG}.before-droidspaces" || true
-            printf '%s\n' "CONFIG_SYSVIPC=y" > "${workdir}/droidspaces.config"
-            printf '%s\n' "CONFIG_POSIX_MQUEUE=y" >> "${workdir}/droidspaces.config"
-            printf '%s\n' "CONFIG_NAMESPACES=y" >> "${workdir}/droidspaces.config"
-            printf '%s\n' "CONFIG_IPC_NS=y" >> "${workdir}/droidspaces.config"
-            printf '%s\n' "CONFIG_PID_NS=y" >> "${workdir}/droidspaces.config"
-            printf '%s\n' "CONFIG_DEVTMPFS=y" >> "${workdir}/droidspaces.config"
-            printf '%s\n' "CONFIG_DEVTMPFS_MOUNT=y" >> "${workdir}/droidspaces.config"
-            printf '%s\n' "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> "${workdir}/droidspaces.config"
-            printf '%s\n' "CONFIG_USER_NS=y" >> "${workdir}/droidspaces.config"
-            printf '%s\n' "CONFIG_NETFILTER_XT_TARGET_REJECT=y" >> "${workdir}/droidspaces.config"
-            printf '%s\n' "CONFIG_NETFILTER_XT_TARGET_LOG=y" >> "${workdir}/droidspaces.config"
-            printf '%s\n' "CONFIG_NETFILTER_XT_MATCH_RECENT=y" >> "${workdir}/droidspaces.config"
-            printf '%s\n' "CONFIG_IP_SET=y" >> "${workdir}/droidspaces.config"
-            printf '%s\n' "CONFIG_IP_SET_HASH_IP=y" >> "${workdir}/droidspaces.config"
-            printf '%s\n' "CONFIG_IP_SET_HASH_NET=y" >> "${workdir}/droidspaces.config"
-            printf '%s\n' "CONFIG_NETFILTER_XT_SET=y" >> "${workdir}/droidspaces.config"
-            printf '%s\n' "CONFIG_TMPFS_POSIX_ACL=y" >> "${workdir}/droidspaces.config"
-            printf '%s\n' "CONFIG_TMPFS_XATTR=y" >> "${workdir}/droidspaces.config"
+            # prepare build script copy in workdir
+            cp build_6.1.sh "${workdir}/build_6.1.sh"
+            chmod +x "${workdir}/build_6.1.sh"
 
-            while IFS= read -r setting; do
-              option="${setting%%=*}"
-              sed -i -e "/^${option}=.*$/d" -e "/^# ${option} is not set$/d" "$CFG" || true
-              printf '%s\n' "${setting}" >> "$CFG"
-            done < "${workdir}/droidspaces.config"
-
-            mv aosp aosp.orig || true
-            ln -s "${workdir}" aosp
-
-            rm -rf out bazel-bin bazel-out bazel-testlogs dist || true
-            mkdir -p dist "${LOGDIR}"
-
-            if ! $BAZEL_CMD build --config=local --spawn_strategy=local --strategy=KernelBuild=local --disk_cache= --repository_cache= //common:kernel_aarch64 2>&1 | tee "${LOGDIR}/bazel-kernel-${label}.log"; then
-              echo "bazel-kernel-failed" > "${LOGDIR}/build-status.txt"
+            # if an extra config fragment was supplied, write it into the script's EXTRA_CONFIGS
+            if [ -n "$EXTRA_CONFIG" ]; then
+              # make the path relative to kernel root if user passed repo path; copy fragment into workdir
+              if [ -f "${GITHUB_WORKSPACE}/${EXTRA_CONFIG}" ]; then
+                cp "${GITHUB_WORKSPACE}/${EXTRA_CONFIG}" "${workdir}/extra-frag.config"
+                # replace EXTRA_CONFIGS=() with EXTRA_CONFIGS=("extra-frag.config")
+                sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh"
+                echo "injected EXTRA_CONFIGS=(\"extra-frag.config\")" > "${LOGDIR}/extra_config_injected.txt"
+              else
+                echo "extra_config_not_found:${EXTRA_CONFIG}" > "${LOGDIR}/extra_config_injected.txt"
+              fi
             fi
 
-            if ! $BAZEL_CMD build --config=local --spawn_strategy=local --strategy=KernelBuild=local --disk_cache= --repository_cache= //common:kernel_aarch64_images 2>&1 | tee -a "${LOGDIR}/bazel-kernel-${label}.log"; then
-              echo "bazel-images-failed" >> "${LOGDIR}/build-status.txt"
-            fi
-
-            if CONFIG_FILE="$(find out -name .config -type f -print -quit 2>/dev/null || true)"; then
-              cp -v "$CONFIG_FILE" "${LOGDIR}/final.config" || true
-            fi
-
-            IMAGE="$(find bazel-bin out -type f -name Image -print -quit || true)"
-            if [ -n "$IMAGE" ]; then
-              mkdir -p kernel/dist/${label}
-              cp "$IMAGE" kernel/dist/${label}/Image || true
+            # run the official build script inside workdir; capture logs
+            pushd "${workdir}" >/dev/null || exit 1
+            echo "Starting build for pattern ${label} -> ${short}" > "${LOGDIR}/build-run.txt"
+            # run and capture stdout/stderr
+            if ./build_6.1.sh 2>&1 | tee "${LOGDIR}/build-output.log"; then
+              echo "build-succeeded" > "${LOGDIR}/build-status.txt"
             else
-              echo "no-image-built" > "${LOGDIR}/build-status.txt"
+              echo "build-failed" > "${LOGDIR}/build-status.txt"
             fi
+            # if the script produced build/Image or out/boot/Image, collect it
+            # prefer out/arch/arm64/boot/Image then arch/arm64/boot/Image
+            if [ -f out/arch/arm64/boot/Image ]; then
+              mkdir -p ../../kernel/dist/${short}
+              cp out/arch/arm64/boot/Image ../../kernel/dist/${short}/Image || true
+            elif [ -f arch/arm64/boot/Image ]; then
+              mkdir -p ../../kernel/dist/${short}
+              cp arch/arm64/boot/Image ../../kernel/dist/${short}/Image || true
+            elif [ -f build/Image ]; then
+              mkdir -p ../../kernel/dist/${short}
+              cp build/Image ../../kernel/dist/${short}/Image || true
+            fi
+            # copy .config if present
+            find out -name .config -type f -exec cp -v {} "${LOGDIR}/final.config" \; 2>/dev/null || true
+            popd >/dev/null
 
-            rm aosp || true
-            mv aosp.orig aosp || true
-
-            tar -czf "/tmp/patch-results/${label}.log.tar.gz" -C "/tmp/patch-results/${label}" . || true
-            cp /tmp/patch-results/sched-full.txt /tmp/patch-results/${label}_sched.txt || true
+            # package logs for this label
+            tar -czf "/tmp/patch-results/${short}-logs.tar.gz" -C "/tmp/patch-results/${label}" . || true
           done
 
-      - name: Debug list build outputs and package bazel logs
-        working-directory: kernel
-        run: |
-          set -euo pipefail
-          echo "ROOT: $(pwd)"
-          echo "aosp listing:"
-          ls -la aosp || true
-          echo "aosp-base listing:"
-          ls -la aosp-base || true
-          echo "bazel-bin & out du:"
-          du -sh bazel-bin 2>/dev/null || true
-          du -sh out 2>/dev/null || true
-          echo "bazel-bin listing:"
-          ls -la bazel-bin 2>/dev/null || true
-          echo "out listing:"
-          ls -la out 2>/dev/null || true
-          echo "kernel/dist listing:"
-          ls -la kernel/dist || true
-          mkdir -p /tmp/build-debug
-          find / -maxdepth 5 -type f -name "bazel-kernel-*.log" -o -name "bazel-*.log" -print 2>/dev/null | while IFS= read -r f; do
-            cp -v "$f" /tmp/build-debug/ || true
-          done
-          cp -v /tmp/patch-results/* /tmp/build-debug/ 2>/dev/null || true
-          tar -czf /tmp/build-debug.tar.gz -C /tmp build-debug || true
-
-      - name: Upload build-debug artifact
+      - name: Upload per-road logs (all)
         uses: actions/upload-artifact@v4
         with:
-          name: build-debug
-          path: /tmp/build-debug.tar.gz
+          name: per-road-logs
+          path: |
+            /tmp/patch-results/678-logs.tar.gz
+            /tmp/patch-results/345-logs.tar.gz
+            /tmp/patch-results/123-logs.tar.gz
           if-no-files-found: warn
 
-      - name: Upload per-patch logs
+      - name: Upload Images (pattern 678)
         uses: actions/upload-artifact@v4
         with:
-          name: per-patch-logs
-          path: /tmp/patch-results/*.log.tar.gz
+          name: pixel7-pantah-kernel-678
+          path: kernel/dist/678/Image
           if-no-files-found: warn
 
-      - name: Upload sched snippets
+      - name: Upload Images (pattern 345)
         uses: actions/upload-artifact@v4
         with:
-          name: sched-snippets
-          path: /tmp/patch-results/*_sched.txt
+          name: pixel7-pantah-kernel-345
+          path: kernel/dist/345/Image
           if-no-files-found: warn
 
-      - name: Upload Image for 6_7_8
+      - name: Upload Images (pattern 123)
         uses: actions/upload-artifact@v4
         with:
-          name: pixel7-pantah-droidspaces-kernel-6_7_8
-          path: kernel/dist/6_7_8/
+          name: pixel7-pantah-kernel-123
+          path: kernel/dist/123/Image
           if-no-files-found: warn
-          retention-days: 7
-
-      - name: Upload Image for 3_4_5
-        uses: actions/upload-artifact@v4
-        with:
-          name: pixel7-pantah-droidspaces-kernel-3_4_5
-          path: kernel/dist/3_4_5/
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Upload Image for 1_2_3
-        uses: actions/upload-artifact@v4
-        with:
-          name: pixel7-pantah-droidspaces-kernel-1_2_3
-          path: kernel/dist/1_2_3/
-          if-no-files-found: warn
-          retention-days: 7
