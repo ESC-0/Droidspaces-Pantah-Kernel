@@ -65,7 +65,11 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf aosp-base || true
-          cp -a . aosp-base
+          mkdir -p aosp-base
+          # copy all files (including dotfiles) into aosp-base without recursing into it
+          shopt -s dotglob || true
+          cp -a ./* aosp-base/ || true
+          cp -a ./.??* aosp-base/ 2>/dev/null || true
           curl -fsSL -o build_6.1.sh \
             https://raw.githubusercontent.com/ravindu644/Android-Kernel-Tutorials/f0e815e5ee1197e7d25142c74060dfa4e10d38da/build_scripts/build_6.1.sh
           chmod +x build_6.1.sh
@@ -219,7 +223,10 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf aosp-base || true
-          cp -a . aosp-base
+          mkdir -p aosp-base
+          shopt -s dotglob || true
+          cp -a ./* aosp-base/ || true
+          cp -a ./.??* aosp-base/ 2>/dev/null || true
           curl -fsSL -o build_6.1.sh \
             https://raw.githubusercontent.com/ravindu644/Android-Kernel-Tutorials/f0e815e5ee1197e7d25142c74060dfa4e10d38da/build_scripts/build_6.1.sh
           chmod +x build_6.1.sh
@@ -249,8 +256,7 @@ jobs:
                 echo "already-applied" > "${LOGDIR}/apply-status-${short}.txt"
               elif git apply --check "$PATCH" 2>/dev/null && git apply "$PATCH"; then
                 echo "applied-clean" > "${LOGDIR}/apply-status-${short}.txt"
-                git diff --name-only > "${LOGDIR}/applied-files-${short}.txt" || true
-              else
+              elif
                 echo "apply-failed" > "${LOGDIR}/apply-status-${short}.txt"
                 git apply --reject --whitespace=fix "$PATCH" 2> "${LOGDIR}/apply-stderr-${short}.txt" || true
                 find . -name '*.rej' -print -exec cp --parents {} "${LOGDIR}/" \; || true
