@@ -4,7 +4,6 @@ on:
   workflow_dispatch:
 
 env:
-  PATCH_BASE: "$GITHUB_WORKSPACE/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12"
   EXTRA_CONFIG_PATH: "kernel/droidspaces-fragment.config"
   KERNEL_FORK_REPO: "https://github.com/ESC-0/SULTAN17.git"
   KERNEL_FORK_BRANCH: "sultan-17"
@@ -28,12 +27,32 @@ jobs:
             libssl-dev libelf-dev pahole libncurses-dev zlib1g-dev libyaml-dev \
             lz4 zstd device-tree-compiler wget openjdk-11-jdk
 
+      - name: Install repo tool (helper)
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/bin"
+          curl -Lf https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
       - name: Clone Droidspaces (patches)
         run: |
           set -euo pipefail
           rm -rf "$GITHUB_WORKSPACE/droidspaces" || true
           git clone --depth=1 https://github.com/ravindu644/Droidspaces-OSS.git "$GITHUB_WORKSPACE/droidspaces"
           mkdir -p /tmp/patch-results
+
+      - name: Export absolute PATCH_BASE and verify patches/fragment
+        run: |
+          set -euo pipefail
+          PATCH_BASE="${GITHUB_WORKSPACE}/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12"
+          echo "PATCH_BASE=${PATCH_BASE}" >> "$GITHUB_ENV"
+          echo "Listing PATCH_BASE (may be empty):"
+          ls -la "${PATCH_BASE}" > /tmp/patch_base_list.txt || true
+          cat /tmp/patch_base_list.txt || true
+          echo "Checking fragment file:"
+          ls -la "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" > /tmp/fragment_list.txt 2>/dev/null || true
+          cat /tmp/fragment_list.txt || true
 
       - name: Clone your fork into kernel/aosp (minimal change)
         run: |
