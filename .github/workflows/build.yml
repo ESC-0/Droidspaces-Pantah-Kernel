@@ -1,4 +1,4 @@
-name: Build Pixel 7 kernel (sultan-17; per-pattern safer builds)
+name: Build Pixel 7 kernel (sultan-17; per-pattern safer builds with swap)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install build dependencies
+      - name: Install build dependencies (includes lld)
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -27,13 +27,26 @@ jobs:
             libssl-dev libelf-dev pahole libncurses-dev zlib1g-dev libyaml-dev \
             lz4 zstd device-tree-compiler wget openjdk-11-jdk lld
 
+      - name: Create 8G swapfile (improves reliability for heavy builds)
+        run: |
+          set -euo pipefail
+          SWAPFILE=/swapfile
+          # avoid recreating if already present
+          if [ ! -f "${SWAPFILE}" ]; then
+            sudo fallocate -l 8G "${SWAPFILE}" || sudo dd if=/dev/zero of="${SWAPFILE}" bs=1M count=8192
+            sudo chmod 600 "${SWAPFILE}"
+            sudo mkswap "${SWAPFILE}"
+            sudo swapon "${SWAPFILE}"
+          fi
+          echo "Swap activated:"
+          sudo swapon --show
+
       - name: Install repo helper and ensure $HOME/bin on PATH
         run: |
           set -euo pipefail
           mkdir -p "$HOME/bin"
           curl -Lf https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
           chmod +x "$HOME/bin/repo"
-          # ensure runner picks up $HOME/bin for later symlinks
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
       - name: Clone Droidspaces (patches)
@@ -121,7 +134,6 @@ jobs:
           fi
           export PATH="${CLANG_DIR}/bin:${PATH}"
           export LD_LIBRARY_PATH="${CLANG_DIR}/lib:${CLANG_DIR}/lib64:${LD_LIBRARY_PATH:-}"
-          # ensure ld.lld exists on PATH (symlink into $HOME/bin if needed)
           mkdir -p "${HOME}/bin"
           if ! command -v ld.lld >/dev/null 2>&1; then
             if [ -x "${CLANG_DIR}/bin/ld.lld" ]; then
@@ -133,8 +145,8 @@ jobs:
           pushd "${workdir}" >/dev/null
           echo "Starting config and build for ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
 
-          # Limit parallelism
-          export MAKEFLAGS=-j2
+          # Reduce parallelism to avoid OOMs on runner
+          export MAKEFLAGS=-j1
 
           # Prepare build options
           DEFCONFIG=gki_defconfig
@@ -251,7 +263,7 @@ jobs:
 
           pushd "${workdir}" >/dev/null
           echo "Starting config and build for ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
-          export MAKEFLAGS=-j2
+          export MAKEFLAGS=-j1
           DEFCONFIG=gki_defconfig
           BUILD_OPTS="ARCH=arm64 O=${PWD}/out LLVM=1 LLVM_IAS=1 HOSTCC=gcc HOSTCXX=g++"
 
@@ -358,7 +370,7 @@ jobs:
 
           pushd "${workdir}" >/dev/null
           echo "Starting config and build for ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
-          export MAKEFLAGS=-j2
+          export MAKEFLAGS=-j1
           DEFCONFIG=gki_defconfig
           BUILD_OPTS="ARCH=arm64 O=${PWD}/out LLVM=1 LLVM_IAS=1 HOSTCC=gcc HOSTCXX=g++"
 
@@ -405,3 +417,13 @@ jobs:
           name: pixel7-pantah-kernel-123
           path: kernel/dist/123
           if-no-files-found: warn
+
+      - name: Remove swapfile
+        if: always()
+        run: |
+          set -euo pipefail
+          SWAPFILE=/swapfile
+          if sudo swapon --show | grep -q "${SWAPFILE}"; then
+            sudo swapoff "${SWAPFILE}" || true
+            sudo rm -f "${SWAPFILE}" || true
+          fi
