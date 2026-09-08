@@ -1,4 +1,4 @@
-name: Build Pixel 7 kernel (sultan-17; per-pattern, safer builds + auto-fragment)
+name: Build Pixel 7 kernel (sultan-17; per-pattern uploads)
 
 on:
   workflow_dispatch:
@@ -13,12 +13,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      - name: Checkout repo (workflow & fragment)
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install build dependencies (DEB list)
+      - name: Install build dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -27,7 +27,7 @@ jobs:
             libssl-dev libelf-dev pahole libncurses-dev zlib1g-dev libyaml-dev \
             lz4 zstd device-tree-compiler wget openjdk-11-jdk
 
-      - name: Install repo tool (helper)
+      - name: Install repo helper
         run: |
           set -euo pipefail
           mkdir -p "$HOME/bin"
@@ -42,26 +42,26 @@ jobs:
           git clone --depth=1 https://github.com/ravindu644/Droidspaces-OSS.git "$GITHUB_WORKSPACE/droidspaces"
           mkdir -p /tmp/patch-results
 
-      - name: Export absolute PATCH_BASE and verify patches/fragment
+      - name: Export absolute PATCH_BASE and verify
         run: |
           set -euo pipefail
           PATCH_BASE="${GITHUB_WORKSPACE}/droidspaces/Documentation/resources/kernel-patches/GKI/below-kernel-6.12"
           echo "PATCH_BASE=${PATCH_BASE}" >> "$GITHUB_ENV"
-          echo "Listing PATCH_BASE (may be empty):"
+          echo "Listing PATCH_BASE (if present):"
           ls -la "${PATCH_BASE}" > /tmp/patch_base_list.txt || true
           cat /tmp/patch_base_list.txt || true
-          echo "Checking fragment file in repo:"
+          echo "Checking fragment path in repo:"
           ls -la "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" > /tmp/fragment_list.txt 2>/dev/null || true
           cat /tmp/fragment_list.txt || true
 
-      - name: Clone your fork into kernel/aosp (minimal change)
+      - name: Clone fork into kernel/aosp
         run: |
           set -euo pipefail
           rm -rf kernel || true
           mkdir -p kernel
           git clone --depth=1 --branch "${KERNEL_FORK_BRANCH}" "${KERNEL_FORK_REPO}" kernel/aosp
 
-      - name: Prepare aosp-base and get official build_6.1.sh
+      - name: Prepare aosp-base and get build script
         working-directory: kernel
         run: |
           set -euo pipefail
@@ -71,21 +71,13 @@ jobs:
             https://raw.githubusercontent.com/ravindu644/Android-Kernel-Tutorials/f0e815e5ee1197e7d25142c74060dfa4e10d38da/build_scripts/build_6.1.sh
           chmod +x build_6.1.sh
 
-      ####################################################################
-      # Pattern helper: function-like sequence repeated for each pattern
-      # (we explicitly copy the block 3x for clarity and per-pattern uploads)
-      ####################################################################
-
-      ####################################################################
-      # Pattern 678
-      ####################################################################
-      - name: Pattern 678 — apply patch & run build_6.1.sh
+      - name: Pattern 678 - apply patch and build
         working-directory: kernel
         continue-on-error: true
         run: |
           set -euo pipefail
-          short="678"
-          label="6_7_8"
+          short=678
+          label=6_7_8
           LOGDIR="/tmp/patch-results/${short}"
           rm -rf "${LOGDIR}" || true
           mkdir -p "${LOGDIR}"
@@ -97,7 +89,7 @@ jobs:
           if [ ! -f "$PATCH" ]; then
             echo "missing-patch: $PATCH" > "${LOGDIR}/apply-status-${short}.txt"
           else
-            pushd "${workdir}" >/dev/null || exit 1
+            pushd "${workdir}" >/dev/null
             if git apply --reverse --check "$PATCH" 2>/dev/null; then
               echo "already-applied" > "${LOGDIR}/apply-status-${short}.txt"
             elif git apply --check "$PATCH" 2>/dev/null && git apply "$PATCH"; then
@@ -118,37 +110,32 @@ jobs:
           sed -i 's/^MENUCONFIG=.*/MENUCONFIG=0/' "${workdir}/build_6.1.sh" || true
           sed -n '1,140p' "${workdir}/build_6.1.sh" > "${LOGDIR}/build_6.1-modified-head-${short}.txt" || true
 
-          # copy fragment if present; otherwise create a minimal fallback fragment
           if [ -f "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" ]; then
             mkdir -p "${workdir}/arch/arm64/configs"
             cp "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" "${workdir}/arch/arm64/configs/extra-frag.config"
             sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
-            echo "copied fragment to arch/arm64/configs/extra-frag.config" > "${LOGDIR}/extra_config_injected-${short}.txt"
+            echo "copied fragment" > "${LOGDIR}/extra_config_injected-${short}.txt"
           else
-            # create a tiny fallback fragment that enables the symbol we saw missing.
             mkdir -p "${workdir}/arch/arm64/configs"
             cat > "${workdir}/arch/arm64/configs/extra-frag.config" <<'EOF'
-# auto-generated fallback fragment (created by CI)
-# Add more config options here if needed.
-CONFIG_SHRINKER_RWSEM=y
-EOF
+            mkdir -p "${workdir}/arch/arm64/configs"
+            printf '%s\n' '# auto-generated fallback fragment' 'CONFIG_SHRINKER_RWSEM=y' > "${workdir}/arch/arm64/configs/extra-frag.config"
             sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
-            echo "created fallback extra-frag.config (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
+            echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
+            sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
+            echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
           fi
 
-          # limit parallelism to avoid OOM on runner
           export MAKEFLAGS=-j2
 
-          pushd "${workdir}" >/dev/null || exit 1
-          echo "Starting build for pattern ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
+          pushd "${workdir}" >/dev/null
+          echo "Starting build for ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
           if ./build_6.1.sh 2>&1 | tee "${LOGDIR}/build-output-${short}.log"; then
             echo "build-succeeded" > "${LOGDIR}/build-status-${short}.txt"
           else
             echo "build-failed" > "${LOGDIR}/build-status-${short}.txt"
           fi
-          # save tail for quick debugging
           tail -n 2000 "${LOGDIR}/build-output-${short}.log" > "${LOGDIR}/build-output-tail-${short}.txt" || true
-
           ls -la > "${LOGDIR}/workdir-listing-${short}.txt" || true
 
           if [ -f out/arch/arm64/boot/Image ]; then
@@ -165,10 +152,9 @@ EOF
           find out -name .config -type f -exec cp -v {} "${LOGDIR}/final.config" \; 2>/dev/null || true
           popd >/dev/null
 
-          # package logs for upload
           tar -czf "/tmp/patch-results/${short}-logs.tar.gz" -C "/tmp/patch-results/${short}" . || true
 
-      - name: Upload logs & image — 678
+      - name: Upload per-road-logs-678
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -176,25 +162,21 @@ EOF
           path: /tmp/patch-results/678
           if-no-files-found: warn
 
-      - name: Upload image — 678
+      - name: Upload image-678
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pixel7-pantah-kernel-678
           path: kernel/dist/678
           if-no-files-found: warn
-          retention-days: 7
 
-      ####################################################################
-      # Pattern 345
-      ####################################################################
-      - name: Pattern 345 — apply patch & run build_6.1.sh
+      - name: Pattern 345 - apply patch and build
         working-directory: kernel
         continue-on-error: true
         run: |
           set -euo pipefail
-          short="345"
-          label="3_4_5"
+          short=345
+          label=3_4_5
           LOGDIR="/tmp/patch-results/${short}"
           rm -rf "${LOGDIR}" || true
           mkdir -p "${LOGDIR}"
@@ -206,7 +188,7 @@ EOF
           if [ ! -f "$PATCH" ]; then
             echo "missing-patch: $PATCH" > "${LOGDIR}/apply-status-${short}.txt"
           else
-            pushd "${workdir}" >/dev/null || exit 1
+            pushd "${workdir}" >/dev/null
             if git apply --reverse --check "$PATCH" 2>/dev/null; then
               echo "already-applied" > "${LOGDIR}/apply-status-${short}.txt"
             elif git apply --check "$PATCH" 2>/dev/null && git apply "$PATCH"; then
@@ -231,29 +213,28 @@ EOF
             mkdir -p "${workdir}/arch/arm64/configs"
             cp "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" "${workdir}/arch/arm64/configs/extra-frag.config"
             sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
-            echo "copied fragment to arch/arm64/configs/extra-frag.config" > "${LOGDIR}/extra_config_injected-${short}.txt"
+            echo "copied fragment" > "${LOGDIR}/extra_config_injected-${short}.txt"
           else
             mkdir -p "${workdir}/arch/arm64/configs"
             cat > "${workdir}/arch/arm64/configs/extra-frag.config" <<'EOF'
-# auto-generated fallback fragment (created by CI)
-# Add more config options here if needed.
-CONFIG_SHRINKER_RWSEM=y
-EOF
+            mkdir -p "${workdir}/arch/arm64/configs"
+            printf '%s\n' '# auto-generated fallback fragment' 'CONFIG_SHRINKER_RWSEM=y' > "${workdir}/arch/arm64/configs/extra-frag.config"
             sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
-            echo "created fallback extra-frag.config (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
+            echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
+            sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
+            echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
           fi
 
           export MAKEFLAGS=-j2
 
-          pushd "${workdir}" >/dev/null || exit 1
-          echo "Starting build for pattern ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
+          pushd "${workdir}" >/dev/null
+          echo "Starting build for ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
           if ./build_6.1.sh 2>&1 | tee "${LOGDIR}/build-output-${short}.log"; then
             echo "build-succeeded" > "${LOGDIR}/build-status-${short}.txt"
           else
             echo "build-failed" > "${LOGDIR}/build-status-${short}.txt"
           fi
           tail -n 2000 "${LOGDIR}/build-output-${short}.log" > "${LOGDIR}/build-output-tail-${short}.txt" || true
-
           ls -la > "${LOGDIR}/workdir-listing-${short}.txt" || true
 
           if [ -f out/arch/arm64/boot/Image ]; then
@@ -272,7 +253,7 @@ EOF
 
           tar -czf "/tmp/patch-results/${short}-logs.tar.gz" -C "/tmp/patch-results/${short}" . || true
 
-      - name: Upload logs & image — 345
+      - name: Upload per-road-logs-345
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -280,25 +261,21 @@ EOF
           path: /tmp/patch-results/345
           if-no-files-found: warn
 
-      - name: Upload image — 345
+      - name: Upload image-345
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pixel7-pantah-kernel-345
           path: kernel/dist/345
           if-no-files-found: warn
-          retention-days: 7
 
-      ####################################################################
-      # Pattern 123
-      ####################################################################
-      - name: Pattern 123 — apply patch & run build_6.1.sh
+      - name: Pattern 123 - apply patch and build
         working-directory: kernel
         continue-on-error: true
         run: |
           set -euo pipefail
-          short="123"
-          label="1_2_3"
+          short=123
+          label=1_2_3
           LOGDIR="/tmp/patch-results/${short}"
           rm -rf "${LOGDIR}" || true
           mkdir -p "${LOGDIR}"
@@ -310,16 +287,15 @@ EOF
           if [ ! -f "$PATCH" ]; then
             echo "missing-patch: $PATCH" > "${LOGDIR}/apply-status-${short}.txt"
           else
-            pushd "${workdir}" >/dev/null || exit 1
+            pushd "${workdir}" >/dev/null
             if git apply --reverse --check "$PATCH" 2>/dev/null; then
               echo "already-applied" > "${LOGDIR}/apply-status-${short}.txt"
             elif git apply --check "$PATCH" 2>/dev/null && git apply "$PATCH"; then
               echo "applied-clean" > "${LOGDIR}/apply-status-${short}.txt"
-              git diff --name-only > "${LOGDIR}/applied-files-${short}.txt" || true
             else
-              echo "apply-failed" > "${LOGDIR}/apply-status-${short}.txt"
-              git apply --reject --whitespace=fix "$PATCH" 2> "${LOGDIR}/apply-stderr-${short}.txt" || true
-              find . -name '*.rej' -print -exec cp --parents {} "${LOGDIR}/" \; || true
+            echo "apply-failed" > "${LOGDIR}/apply-status-${short}.txt"
+            git apply --reject --whitespace=fix "$PATCH" 2> "${LOGDIR}/apply-stderr-${short}.txt" || true
+            find . -name '*.rej' -print -exec cp --parents {} "${LOGDIR}/" \; || true
             fi
             cp -v "$PATCH" "${LOGDIR}/" 2>/dev/null || true
             popd >/dev/null
@@ -335,29 +311,28 @@ EOF
             mkdir -p "${workdir}/arch/arm64/configs"
             cp "${GITHUB_WORKSPACE}/${EXTRA_CONFIG_PATH}" "${workdir}/arch/arm64/configs/extra-frag.config"
             sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
-            echo "copied fragment to arch/arm64/configs/extra-frag.config" > "${LOGDIR}/extra_config_injected-${short}.txt"
+            echo "copied fragment" > "${LOGDIR}/extra_config_injected-${short}.txt"
           else
             mkdir -p "${workdir}/arch/arm64/configs"
             cat > "${workdir}/arch/arm64/configs/extra-frag.config" <<'EOF'
-# auto-generated fallback fragment (created by CI)
-# Add more config options here if needed.
-CONFIG_SHRINKER_RWSEM=y
-EOF
+            mkdir -p "${workdir}/arch/arm64/configs"
+            printf '%s\n' '# auto-generated fallback fragment' 'CONFIG_SHRINKER_RWSEM=y' > "${workdir}/arch/arm64/configs/extra-frag.config"
             sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
-            echo "created fallback extra-frag.config (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
+            echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
+            sed -i 's/^EXTRA_CONFIGS=.*/EXTRA_CONFIGS=(\"extra-frag.config\")/' "${workdir}/build_6.1.sh" || true
+            echo "created fallback fragment (CONFIG_SHRINKER_RWSEM=y)" > "${LOGDIR}/extra_config_injected-${short}.txt"
           fi
 
           export MAKEFLAGS=-j2
 
-          pushd "${workdir}" >/dev/null || exit 1
-          echo "Starting build for pattern ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
+          pushd "${workdir}" >/dev/null
+          echo "Starting build for ${label} -> ${short}" > "${LOGDIR}/build-run-${short}.txt"
           if ./build_6.1.sh 2>&1 | tee "${LOGDIR}/build-output-${short}.log"; then
             echo "build-succeeded" > "${LOGDIR}/build-status-${short}.txt"
           else
             echo "build-failed" > "${LOGDIR}/build-status-${short}.txt"
           fi
           tail -n 2000 "${LOGDIR}/build-output-${short}.log" > "${LOGDIR}/build-output-tail-${short}.txt" || true
-
           ls -la > "${LOGDIR}/workdir-listing-${short}.txt" || true
 
           if [ -f out/arch/arm64/boot/Image ]; then
@@ -376,7 +351,7 @@ EOF
 
           tar -czf "/tmp/patch-results/${short}-logs.tar.gz" -C "/tmp/patch-results/${short}" . || true
 
-      - name: Upload logs & image — 123
+      - name: Upload per-road-logs-123
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -384,11 +359,10 @@ EOF
           path: /tmp/patch-results/123
           if-no-files-found: warn
 
-      - name: Upload image — 123
+      - name: Upload image-123
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pixel7-pantah-kernel-123
           path: kernel/dist/123
           if-no-files-found: warn
-          retention-days: 7
